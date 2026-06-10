@@ -2,7 +2,7 @@
 
 A proof-of-concept for finetuning [Whisper](https://huggingface.co/openai/whisper-tiny)
 with **GRPO** (Group Relative Policy Optimization) using **word error rate (WER)**
-as the reward.
+as the reward, **across many languages**.
 
 Instead of cross-entropy against a single reference, the model samples a group
 of candidate transcriptions per audio clip, scores each one by its WER against
@@ -13,8 +13,11 @@ policy-gradient objective regularized by a KL penalty to the original model.
 
 For each audio clip in a batch:
 
-1. **Sample a group.** Draw `num_generations` transcriptions from the current
-   policy with temperature sampling.
+1. **Sample a group.** Conditioned on the clip's known language, draw
+   `num_generations` transcriptions from the current policy with temperature
+   sampling. The ground-truth language is forced via the decoder prompt
+   (`<|sot|><|lang|><|transcribe|><|notimestamps|>`) so GRPO optimizes
+   transcription quality, not language identification.
 2. **Score.** Reward each completion with `-WER` (post text-normalization)
    against the reference transcript. Lower error → higher reward.
 3. **Group-relative advantages.** Center and scale the rewards within each
@@ -35,11 +38,13 @@ src/whisper_rl/
 ├── config.py              # Pydantic hyperparameter config
 ├── rewards.py             # WER normalization + reward
 ├── grpo.py                # Advantages, token log-probs, GRPO loss (pure torch)
+├── languages.py           # Common Voice locale -> Whisper language mapping
+├── metrics.py             # Per-language corpus-WER accumulator
 ├── modeling/__init__.py   # Whisper policy / frozen reference builders
-├── datasets/__init__.py   # Streamed Common Voice dataset + DataModule
+├── datasets/__init__.py   # Streamed multilingual Common Voice + DataModule
 ├── lightning_module.py    # WhisperGRPOModule (the training loop)
 └── scripts/train.py       # CLI entry point (the `train` command)
-tests/                     # Unit tests for grpo, rewards, config
+tests/                     # Unit tests for grpo, rewards, languages, metrics
 ```
 
 ## Setup
@@ -54,18 +59,22 @@ uv sync
 
 ```bash
 cp .env.example .env
-# Add your HUGGINGFACE_TOKEN and WANDB_API_KEY
+# Add your WANDB_API_KEY (and HUGGINGFACE_TOKEN if you hit rate limits)
 ```
 
-Common Voice is a **gated** dataset: log in to Hugging Face and accept the
-terms for `mozilla-foundation/common_voice_17_0` (or point `dataset_name` at
-another corpus). The `HUGGINGFACE_TOKEN` from `.env` is used to authenticate
-the streamed download.
+The default dataset is [`fsicoli/common_voice_21_0`](https://huggingface.co/datasets/fsicoli/common_voice_21_0),
+an unofficial Common Voice 21 mirror (CC0). It replaces the official
+`mozilla-foundation/common_voice_*` repos, which were removed from the Hub in
+October 2025. It is a **script-based** loader, so `trust_remote_code=True` is
+passed automatically. Column names follow the Common Voice convention
+(`sentence`, `audio`, `locale`); override them in `config.py` if your dataset
+differs.
 
 ## Usage
 
-Train (defaults: `openai/whisper-tiny`, English Common Voice, a small streamed
-slice so a PoC run stays light):
+By default `train` streams **every Common Voice 21 locale that the Whisper
+checkpoint supports** (auto-discovered and interleaved), caps the number of
+streamed examples so a PoC run stays light, and finetunes `openai/whisper-tiny`:
 
 ```bash
 uv run train
@@ -90,19 +99,27 @@ uv run train --fast_dev_run --no_wandb
 All hyperparameters live in [`src/whisper_rl/config.py`](src/whisper_rl/config.py).
 Notable knobs:
 
-| Field                                    | Default                                       | Meaning                                          |
-| ---------------------------------------- | --------------------------------------------- | ------------------------------------------------ |
-| `base_model`                             | `openai/whisper-tiny`                         | Whisper checkpoint to finetune                   |
-| `dataset_name` / `dataset_config`        | `mozilla-foundation/common_voice_17_0` / `en` | Dataset and locale                               |
-| `num_generations`                        | `8`                                           | Completions sampled per clip (group size)        |
-| `temperature`                            | `1.0`                                         | Sampling temperature for rollouts                |
-| `kl_beta`                                | `0.04`                                        | Weight of the KL penalty to the reference        |
-| `clip_eps`                               | `0.2`                                         | PPO-style ratio clipping                         |
-| `learning_rate`                          | `1e-6`                                        | AdamW learning rate (RL finetuning is sensitive) |
-| `max_train_samples` / `max_eval_samples` | `512` / `64`                                  | Streamed slice sizes (`None` = full split)       |
+| Field                                    | Default                     | Meaning                                           |
+| ---------------------------------------- | --------------------------- | ------------------------------------------------- |
+| `base_model`                             | `openai/whisper-tiny`       | Multilingual Whisper checkpoint to finetune       |
+| `dataset_name`                           | `fsicoli/common_voice_21_0` | Common Voice 21 mirror (script loader)            |
+| `languages`                              | `None`                      | Locales to stream; `None` = all Whisper-supported |
+| `num_generations`                        | `8`                         | Completions sampled per clip (group size)         |
+| `temperature`                            | `1.0`                       | Sampling temperature for rollouts                 |
+| `kl_beta`                                | `0.04`                      | Weight of the KL penalty to the reference         |
+| `clip_eps`                               | `0.2`                       | PPO-style ratio clipping                          |
+| `learning_rate`                          | `1e-6`                      | AdamW learning rate (RL finetuning is sensitive)  |
+| `max_train_samples` / `max_eval_samples` | `1024` / `256`              | Streamed slice sizes (`None` = full split)        |
 
-Metrics logged during training: `train/loss`, `train/reward`, `train/kl`,
-`train/completion_len`, and `val/wer` (greedy-decode WER on the eval split).
+To train on a specific set of languages, set
+`languages=["en", "de", "fr", "zh-CN"]` (Common Voice locale codes).
+
+### Metrics
+
+Logged during training: `train/loss`, `train/reward`, `train/kl`,
+`train/completion_len`. Validation reports corpus WER overall (`val/wer`) **and
+per language** (`val/wer_en`, `val/wer_de`, …), so you can see which languages
+improve or regress.
 
 ## Development
 
@@ -120,6 +137,9 @@ uv run pre-commit run -a         # everything (matches CI)
   sensitive to learning rate, group size, and KL weight — expect to sweep.
 - Whisper-tiny is chosen for fast iteration; bump `base_model` to `whisper-base`
   or `whisper-small` once the loop is validated.
+- Streaming ~90 language configs and interleaving them is convenient but not
+  perfectly balanced; for serious per-language evaluation, raise
+  `max_eval_samples` (or set it to `None`) so every language is well represented.
 - One gradient update is taken per rollout (the importance ratio is 1), which
   keeps the implementation on-policy and simple. Add inner epochs over cached
   rollouts if you want the full off-policy PPO-style reuse.

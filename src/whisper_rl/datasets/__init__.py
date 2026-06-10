@@ -1,35 +1,51 @@
 """Datasets and data loading for Whisper GRPO."""
 
+import logging
 import os
 from typing import NamedTuple
 
 import torch
-from datasets import Audio, load_dataset
+from datasets import (
+    Audio,
+    get_dataset_config_names,
+    interleave_datasets,
+    load_dataset,
+)
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 from transformers import WhisperProcessor
 
 from whisper_rl.config import Config
+from whisper_rl.languages import locale_to_whisper, supported_locales
+
+logger = logging.getLogger(__name__)
+
+# (input_features, reference, whisper_language_code)
+Example = tuple[torch.Tensor, str, str]
 
 
 class Batch(NamedTuple):
-    """A batch of audio features and their reference transcriptions.
+    """A batch of audio features, references, and languages.
 
     Attributes:
         input_features: Log-mel features of shape ``(batch, n_mels, frames)``.
         references: Ground-truth transcriptions, one per audio clip.
+        languages: Whisper language code for each clip (used to condition the
+            decoder and to bucket per-language metrics).
     """
 
     input_features: torch.Tensor
     references: list[str]
+    languages: list[str]
 
 
 class SpeechDataset(Dataset):
-    """In-memory speech dataset materialized from a (streamed) HF dataset.
+    """In-memory multilingual speech dataset materialized from a stream.
 
-    Streaming avoids downloading an entire corpus; only the requested number
-    of examples are pulled and their log-mel features pre-computed. This keeps
-    proof-of-concept runs light while remaining a standard map-style dataset.
+    Several Common Voice locale configs are streamed and interleaved; only the
+    requested number of examples are pulled and their log-mel features
+    pre-computed. Streaming avoids downloading whole corpora, keeping
+    proof-of-concept runs light while remaining a map-style dataset.
     """
 
     def __init__(
@@ -41,25 +57,18 @@ class SpeechDataset(Dataset):
     ) -> None:
         self.config = config
         self.processor = processor
-        token = os.environ.get("HUGGINGFACE_TOKEN")
-        dataset = load_dataset(
-            config.dataset_name,
-            config.dataset_config,
-            split=split,
-            streaming=True,
-            trust_remote_code=True,
-            token=token,
-        )
-        dataset = dataset.cast_column(
-            config.audio_column, Audio(sampling_rate=config.sample_rate)
-        )
+        self.examples: list[Example] = []
+
+        dataset = self._load_stream(split)
         if max_samples is not None:
             dataset = dataset.take(max_samples)
 
-        self.examples: list[tuple[torch.Tensor, str]] = []
         for row in dataset:
             reference = str(row[config.text_column]).strip()
             if not reference:
+                continue
+            language = locale_to_whisper(str(row[config.locale_column]))
+            if language is None:
                 continue
             audio = row[config.audio_column]
             features = processor.feature_extractor(
@@ -67,29 +76,73 @@ class SpeechDataset(Dataset):
                 sampling_rate=config.sample_rate,
                 return_tensors="pt",
             )
-            self.examples.append((features.input_features[0], reference))
+            self.examples.append((features.input_features[0], reference, language))
+
+    def _resolve_languages(self, token: str | None) -> list[str]:
+        """Return the locale configs to stream for this dataset."""
+        if self.config.languages is not None:
+            return self.config.languages
+        available = get_dataset_config_names(
+            self.config.dataset_name, trust_remote_code=True, token=token
+        )
+        return supported_locales(available)
+
+    def _load_stream(self, split: str):  # noqa: ANN202
+        """Stream and interleave every configured locale for ``split``."""
+        token = os.environ.get("HUGGINGFACE_TOKEN")
+        locales = self._resolve_languages(token)
+        streams = []
+        for locale in locales:
+            try:
+                stream = load_dataset(
+                    self.config.dataset_name,
+                    locale,
+                    split=split,
+                    streaming=True,
+                    trust_remote_code=True,
+                    token=token,
+                )
+            except Exception as error:  # pragma: no cover - network/config issues
+                logger.warning("Skipping locale %s: %s", locale, error)
+                continue
+            stream = stream.cast_column(
+                self.config.audio_column,
+                Audio(sampling_rate=self.config.sample_rate),
+            )
+            streams.append(stream)
+
+        if not streams:
+            raise RuntimeError(
+                f"No usable locales for {self.config.dataset_name!r} ({split})."
+            )
+        if len(streams) == 1:
+            return streams[0]
+        return interleave_datasets(streams, stopping_strategy="all_exhausted")
 
     def __len__(self) -> int:
         """Return the number of examples."""
         return len(self.examples)
 
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, str]:
-        """Return the ``(input_features, reference)`` example at ``index``."""
+    def __getitem__(self, index: int) -> Example:
+        """Return the ``(input_features, reference, language)`` example."""
         return self.examples[index]
 
 
-def collate(examples: list[tuple[torch.Tensor, str]]) -> Batch:
+def collate(examples: list[Example]) -> Batch:
     """Collate examples into a :class:`Batch`.
 
     Args:
-        examples: ``(input_features, reference)`` items from a dataset.
+        examples: ``(input_features, reference, language)`` items.
 
     Returns:
         A batched :class:`Batch`.
     """
-    input_features = torch.stack([features for features, _ in examples])
-    references = [reference for _, reference in examples]
-    return Batch(input_features=input_features, references=references)
+    input_features = torch.stack([features for features, _, _ in examples])
+    references = [reference for _, reference, _ in examples]
+    languages = [language for _, _, language in examples]
+    return Batch(
+        input_features=input_features, references=references, languages=languages
+    )
 
 
 class SpeechDataModule(LightningDataModule):

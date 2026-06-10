@@ -13,24 +13,26 @@ from whisper_rl.grpo import (
     grpo_loss,
     sequence_log_probs,
 )
+from whisper_rl.metrics import LanguageWER
 from whisper_rl.modeling import (
+    PROMPT_LEN,
     build_policy,
     build_processor,
     build_reference,
-    decoder_prompt_ids,
     repeat_features,
 )
-from whisper_rl.rewards import wer_reward, word_error_rate
+from whisper_rl.rewards import wer_reward
 
 
 class WhisperGRPOModule(LightningModule):
     """Finetune Whisper with Group Relative Policy Optimization on WER.
 
     For each audio clip a group of completions is sampled from the current
-    policy, scored by negated WER against the reference transcript, and turned
-    into group-relative advantages. The policy is updated with a clipped
-    policy-gradient objective regularized by a KL penalty toward a frozen copy
-    of the initial model.
+    policy (conditioned on the clip's known language), scored by negated WER
+    against the reference transcript, and turned into group-relative
+    advantages. The policy is updated with a clipped policy-gradient objective
+    regularized by a KL penalty toward a frozen copy of the initial model.
+    Validation reports word error rate overall and broken down per language.
     """
 
     def __init__(
@@ -42,31 +44,47 @@ class WhisperGRPOModule(LightningModule):
         self.processor = processor if processor is not None else build_processor(config)
         self.policy = build_policy(config)
         self.reference = build_reference(config)
-        self.prompt_ids = decoder_prompt_ids(self.processor, self.policy)
-        self.prompt_len = len(self.prompt_ids)
+        self.prompt_len = PROMPT_LEN
         eos = self.policy.config.eos_token_id
         self.eos_token_id = int(eos)  # ty: ignore[invalid-argument-type]
+        self.val_metric = LanguageWER()
 
-    def _generate(self, input_features: torch.Tensor) -> torch.Tensor:
-        """Sample completions from the current policy.
+    def _generate(
+        self, input_features: torch.Tensor, languages: list[str], sample: bool
+    ) -> torch.Tensor:
+        """Generate completions conditioned on each clip's language.
 
         Args:
-            input_features: Expanded features of shape
-                ``(batch * num_generations, n_mels, frames)``.
+            input_features: Features of shape ``(batch, n_mels, frames)``.
+            languages: Whisper language code per row of ``input_features``.
+            sample: Whether to sample (training rollouts) or decode greedily
+                (validation).
 
         Returns:
-            Generated token ids including the forced decoder prompt.
+            Generated token ids including the forced 4-token decoder prompt.
         """
         with torch.no_grad():
-            sequences = self.policy.generate(  # ty: ignore[missing-argument]
-                input_features=input_features,
-                do_sample=True,
-                temperature=self.config.temperature,
-                top_p=self.config.top_p,
-                top_k=self.config.top_k if self.config.top_k > 0 else None,
-                num_return_sequences=1,
-                max_new_tokens=self.config.max_new_tokens,
-            )
+            if sample:
+                sequences = self.policy.generate(  # ty: ignore[missing-argument]
+                    input_features=input_features,
+                    language=languages,
+                    task=self.config.task,
+                    max_new_tokens=self.config.max_new_tokens,
+                    do_sample=True,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                    top_k=self.config.top_k if self.config.top_k > 0 else None,
+                    num_return_sequences=1,
+                )
+            else:
+                sequences = self.policy.generate(  # ty: ignore[missing-argument]
+                    input_features=input_features,
+                    language=languages,
+                    task=self.config.task,
+                    max_new_tokens=self.config.max_new_tokens,
+                    do_sample=False,
+                    num_beams=1,
+                )
         return sequences  # ty: ignore[invalid-return-type]
 
     def _completion_log_probs(
@@ -79,7 +97,7 @@ class WhisperGRPOModule(LightningModule):
 
         Args:
             model: The policy or reference Whisper model.
-            input_features: Expanded encoder features.
+            input_features: Encoder features matching ``sequences``.
             sequences: Full generated sequences (prompt + completion).
 
         Returns:
@@ -98,8 +116,9 @@ class WhisperGRPOModule(LightningModule):
         num_gen = self.config.num_generations
         features = repeat_features(batch.input_features, num_gen)
         references = [ref for ref in batch.references for _ in range(num_gen)]
+        languages = [lang for lang in batch.languages for _ in range(num_gen)]
 
-        sequences = self._generate(features)
+        sequences = self._generate(features, languages, sample=True)
         completion_ids = sequences[:, self.prompt_len :]
         hypotheses = self.processor.batch_decode(
             completion_ids, skip_special_tokens=True
@@ -144,28 +163,28 @@ class WhisperGRPOModule(LightningModule):
         )
         return loss
 
+    def on_validation_epoch_start(self) -> None:
+        """Reset the per-language WER accumulator."""
+        self.val_metric.reset()
+
     def validation_step(self, batch: Batch, batch_idx: int) -> None:
-        """Greedy-decode the batch and log word error rate."""
-        with torch.no_grad():
-            sequences = self.policy.generate(  # ty: ignore[missing-argument]
-                input_features=batch.input_features,
-                do_sample=False,
-                num_beams=1,
-                max_new_tokens=self.config.max_new_tokens,
-            )
-        hypotheses = self.processor.batch_decode(sequences, skip_special_tokens=True)
-        wers = [
-            word_error_rate(ref, hyp)
-            for ref, hyp in zip(batch.references, hypotheses, strict=True)
-        ]
-        mean_wer = torch.tensor(wers, device=self.device).mean()
-        self.log(
-            "val/wer",
-            mean_wer,
-            prog_bar=True,
-            batch_size=batch.input_features.size(0),
-            sync_dist=True,
+        """Greedy-decode the batch and accumulate per-language WER."""
+        sequences = self._generate(batch.input_features, batch.languages, sample=False)
+        completion_ids = sequences[:, self.prompt_len :]
+        hypotheses = self.processor.batch_decode(
+            completion_ids, skip_special_tokens=True
         )
+        for language, reference, hypothesis in zip(
+            batch.languages, batch.references, hypotheses, strict=True
+        ):
+            self.val_metric.update(language, reference, hypothesis)
+
+    def on_validation_epoch_end(self) -> None:
+        """Log overall and per-language word error rates."""
+        results = self.val_metric.compute()
+        for language, wer in results.items():
+            name = "val/wer" if language == "overall" else f"val/wer_{language}"
+            self.log(name, wer, prog_bar=language == "overall", sync_dist=True)
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         """Configure the AdamW optimizer and a warmup + cosine schedule."""

@@ -15,21 +15,26 @@ class Config(BaseModel):
 
     # Model.
     base_model: str = "openai/whisper-tiny"
-    language: str = "en"
     task: str = "transcribe"
 
     # Data.
-    dataset_name: str = "mozilla-foundation/common_voice_17_0"
-    dataset_config: str = "en"
+    # Unofficial Common Voice 21 mirror (the official mozilla-foundation repos
+    # were removed from the Hub in Oct 2025). It is a script-based loader, so
+    # ``trust_remote_code=True`` is required.
+    dataset_name: str = "fsicoli/common_voice_21_0"
+    # Languages (Common Voice locale configs) to stream and interleave. ``None``
+    # means "every locale this Whisper checkpoint supports" (auto-discovered).
+    languages: list[str] | None = None
     train_split: str = "train"
     eval_split: str = "validation"
     audio_column: str = "audio"
     text_column: str = "sentence"
+    locale_column: str = "locale"
     sample_rate: int = 16000
     # Cap the number of streamed examples so a PoC run stays light. ``None``
-    # uses the full split.
-    max_train_samples: int | None = 512
-    max_eval_samples: int | None = 64
+    # uses the full splits.
+    max_train_samples: int | None = 1024
+    max_eval_samples: int | None = 256
     batch_size: int = 4
     num_workers: int = 4
 

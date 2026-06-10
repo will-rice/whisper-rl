@@ -5,9 +5,18 @@ from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 from whisper_rl.config import Config
 
+# Whisper forces a 4-token decoder prompt before the transcription:
+# ``[<|startoftranscript|>, <|lang|>, <|transcribe|>, <|notimestamps|>]``.
+# The language token varies per clip but the length is constant, which is all
+# we need to separate the prompt from sampled completion tokens.
+PROMPT_LEN = 4
+
 
 def build_processor(config: Config) -> WhisperProcessor:
-    """Load the Whisper processor for ``config.base_model``.
+    """Load the (multilingual) Whisper processor for ``config.base_model``.
+
+    No language is fixed here: the language is supplied per clip at generation
+    time so a single model can be trained across many languages.
 
     Args:
         config: Project configuration.
@@ -15,16 +24,14 @@ def build_processor(config: Config) -> WhisperProcessor:
     Returns:
         The loaded :class:`~transformers.WhisperProcessor`.
     """
-    return WhisperProcessor.from_pretrained(
-        config.base_model, language=config.language, task=config.task
-    )
+    return WhisperProcessor.from_pretrained(config.base_model)
 
 
 def build_policy(config: Config) -> WhisperForConditionalGeneration:
     """Load a trainable Whisper policy model.
 
-    The generation config is set up for the configured language/task and
-    caching is disabled for gradient compatibility during the loss pass.
+    Any checkpoint-baked ``forced_decoder_ids`` are cleared so the per-clip
+    language passed to ``generate`` is what conditions decoding.
 
     Args:
         config: Project configuration.
@@ -33,12 +40,7 @@ def build_policy(config: Config) -> WhisperForConditionalGeneration:
         A trainable Whisper model.
     """
     model = WhisperForConditionalGeneration.from_pretrained(config.base_model)
-    # ``language``/``task`` are dynamic GenerationConfig attributes; forced
-    # decoder ids are recomputed by ``generate`` from language/task.
-    gen = model.generation_config
-    gen.language = config.language  # ty: ignore[unresolved-attribute]
-    gen.task = config.task  # ty: ignore[unresolved-attribute]
-    gen.forced_decoder_ids = None  # ty: ignore[unresolved-attribute]
+    model.generation_config.forced_decoder_ids = None  # ty: ignore[unresolved-attribute]
     model.config.forced_decoder_ids = None
     return model
 
@@ -56,26 +58,6 @@ def build_reference(config: Config) -> WhisperForConditionalGeneration:
     model.eval()
     model.requires_grad_(False)
     return model
-
-
-def decoder_prompt_ids(
-    processor: WhisperProcessor, model: WhisperForConditionalGeneration
-) -> list[int]:
-    """Return the forced decoder prompt that precedes generated tokens.
-
-    The prompt is ``[decoder_start, <|lang|>, <|task|>, <|notimestamps|>]`` and
-    its length is needed to separate the prompt from sampled completion tokens.
-
-    Args:
-        processor: The Whisper processor.
-        model: The Whisper model (for its decoder start token id).
-
-    Returns:
-        The list of forced decoder prompt token ids.
-    """
-    start = int(model.config.decoder_start_token_id)
-    forced = processor.get_decoder_prompt_ids(no_timestamps=True)
-    return [start] + [int(token_id) for _, token_id in forced]
 
 
 def repeat_features(input_features: torch.Tensor, num_generations: int) -> torch.Tensor:
