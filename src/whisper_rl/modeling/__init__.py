@@ -15,8 +15,8 @@ PROMPT_LEN = 4
 def build_processor(config: Config) -> WhisperProcessor:
     """Load the (multilingual) Whisper processor for ``config.base_model``.
 
-    No language is fixed here: the language is supplied per clip at generation
-    time so a single model can be trained across many languages.
+    No language is fixed here: Whisper auto-detects each clip's language at
+    generation time so a single model can be trained across many languages.
 
     Args:
         config: Project configuration.
@@ -30,8 +30,8 @@ def build_processor(config: Config) -> WhisperProcessor:
 def build_policy(config: Config) -> WhisperForConditionalGeneration:
     """Load a trainable Whisper policy model.
 
-    Any checkpoint-baked ``forced_decoder_ids`` are cleared so the per-clip
-    language passed to ``generate`` is what conditions decoding.
+    Any checkpoint-baked ``forced_decoder_ids`` are cleared so Whisper's
+    per-clip language auto-detection is what conditions decoding.
 
     Args:
         config: Project configuration.

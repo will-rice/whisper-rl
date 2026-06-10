@@ -133,11 +133,11 @@ def collate(examples: list[Example]) -> Batch:
     Returns:
         A batched :class:`Batch`.
     """
-    input_features = torch.stack([features for features, _, _ in examples])
-    references = [reference for _, reference, _ in examples]
-    languages = [locale for _, _, locale in examples]
+    features, references, locales = zip(*examples, strict=True)
     return Batch(
-        input_features=input_features, references=references, languages=languages
+        input_features=torch.stack(features),
+        references=list(references),
+        languages=list(locales),
     )
 
 
