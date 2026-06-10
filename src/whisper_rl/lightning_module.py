@@ -49,25 +49,25 @@ class WhisperGRPOModule(LightningModule):
         self.eos_token_id = int(eos)  # ty: ignore[invalid-argument-type]
         self.val_metric = LanguageWER()
 
-    def _generate(
-        self, input_features: torch.Tensor, languages: list[str], sample: bool
-    ) -> torch.Tensor:
-        """Generate completions conditioned on each clip's language.
+    def _generate(self, input_features: torch.Tensor, sample: bool) -> torch.Tensor:
+        """Generate transcriptions, auto-detecting each clip's language.
+
+        Whisper detects the language and prepends a fixed 4-token decoder
+        prompt (``<|sot|><|lang|><|transcribe|><|notimestamps|>``) before the
+        transcription tokens.
 
         Args:
             input_features: Features of shape ``(batch, n_mels, frames)``.
-            languages: Whisper language code per row of ``input_features``.
             sample: Whether to sample (training rollouts) or decode greedily
                 (validation).
 
         Returns:
-            Generated token ids including the forced 4-token decoder prompt.
+            Generated token ids including the 4-token decoder prompt.
         """
         with torch.no_grad():
             if sample:
                 sequences = self.policy.generate(  # ty: ignore[missing-argument]
                     input_features=input_features,
-                    language=languages,
                     task=self.config.task,
                     max_new_tokens=self.config.max_new_tokens,
                     do_sample=True,
@@ -79,7 +79,6 @@ class WhisperGRPOModule(LightningModule):
             else:
                 sequences = self.policy.generate(  # ty: ignore[missing-argument]
                     input_features=input_features,
-                    language=languages,
                     task=self.config.task,
                     max_new_tokens=self.config.max_new_tokens,
                     do_sample=False,
@@ -116,9 +115,8 @@ class WhisperGRPOModule(LightningModule):
         num_gen = self.config.num_generations
         features = repeat_features(batch.input_features, num_gen)
         references = [ref for ref in batch.references for _ in range(num_gen)]
-        languages = [lang for lang in batch.languages for _ in range(num_gen)]
 
-        sequences = self._generate(features, languages, sample=True)
+        sequences = self._generate(features, sample=True)
         completion_ids = sequences[:, self.prompt_len :]
         hypotheses = self.processor.batch_decode(
             completion_ids, skip_special_tokens=True
@@ -175,7 +173,7 @@ class WhisperGRPOModule(LightningModule):
 
     def validation_step(self, batch: Batch, batch_idx: int) -> None:
         """Greedy-decode the batch and accumulate per-language WER."""
-        sequences = self._generate(batch.input_features, batch.languages, sample=False)
+        sequences = self._generate(batch.input_features, sample=False)
         completion_ids = sequences[:, self.prompt_len :]
         hypotheses = self.processor.batch_decode(
             completion_ids, skip_special_tokens=True

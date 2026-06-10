@@ -22,8 +22,10 @@ class Config(BaseModel):
     # were removed from the Hub in Oct 2025). It is a script-based loader, so
     # ``trust_remote_code=True`` is required.
     dataset_name: str = "fsicoli/common_voice_21_0"
-    # Languages (Common Voice locale configs) to stream and interleave. ``None``
-    # means "every locale this Whisper checkpoint supports" (auto-discovered).
+    # Common Voice locale configs to stream and interleave. ``None`` means
+    # "every locale in the dataset" (auto-discovered). The clip's language is
+    # auto-detected by Whisper at generation time; the locale is used only to
+    # bucket per-language metrics.
     languages: list[str] | None = None
     train_split: str = "train"
     eval_split: str = "validation"

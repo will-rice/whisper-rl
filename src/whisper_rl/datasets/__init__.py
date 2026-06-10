@@ -16,11 +16,10 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import WhisperProcessor
 
 from whisper_rl.config import Config
-from whisper_rl.languages import locale_to_whisper, supported_locales
 
 logger = logging.getLogger(__name__)
 
-# (input_features, reference, whisper_language_code)
+# (input_features, reference, common_voice_locale)
 Example = tuple[torch.Tensor, str, str]
 
 
@@ -30,8 +29,8 @@ class Batch(NamedTuple):
     Attributes:
         input_features: Log-mel features of shape ``(batch, n_mels, frames)``.
         references: Ground-truth transcriptions, one per audio clip.
-        languages: Whisper language code for each clip (used to condition the
-            decoder and to bucket per-language metrics).
+        languages: Common Voice locale for each clip, used to bucket
+            per-language metrics (the decoder language is auto-detected).
     """
 
     input_features: torch.Tensor
@@ -67,25 +66,22 @@ class SpeechDataset(Dataset):
             reference = str(row[config.text_column]).strip()
             if not reference:
                 continue
-            language = locale_to_whisper(str(row[config.locale_column]))
-            if language is None:
-                continue
+            locale = str(row[config.locale_column])
             audio = row[config.audio_column]
             features = processor.feature_extractor(
                 audio["array"],
                 sampling_rate=config.sample_rate,
                 return_tensors="pt",
             )
-            self.examples.append((features.input_features[0], reference, language))
+            self.examples.append((features.input_features[0], reference, locale))
 
     def _resolve_languages(self, token: str | None) -> list[str]:
         """Return the locale configs to stream for this dataset."""
         if self.config.languages is not None:
             return self.config.languages
-        available = get_dataset_config_names(
+        return get_dataset_config_names(
             self.config.dataset_name, trust_remote_code=True, token=token
         )
-        return supported_locales(available)
 
     def _load_stream(self, split: str):  # noqa: ANN202
         """Stream and interleave every configured locale for ``split``."""
@@ -132,14 +128,14 @@ def collate(examples: list[Example]) -> Batch:
     """Collate examples into a :class:`Batch`.
 
     Args:
-        examples: ``(input_features, reference, language)`` items.
+        examples: ``(input_features, reference, locale)`` items.
 
     Returns:
         A batched :class:`Batch`.
     """
     input_features = torch.stack([features for features, _, _ in examples])
     references = [reference for _, reference, _ in examples]
-    languages = [language for _, _, language in examples]
+    languages = [locale for _, _, locale in examples]
     return Batch(
         input_features=input_features, references=references, languages=languages
     )
