@@ -163,6 +163,12 @@ class WhisperGRPOModule(LightningModule):
         )
         return loss
 
+    def train(self, mode: bool = True) -> "WhisperGRPOModule":
+        """Keep the frozen reference model in eval mode at all times."""
+        super().train(mode)
+        self.reference.eval()
+        return self
+
     def on_validation_epoch_start(self) -> None:
         """Reset the per-language WER accumulator."""
         self.val_metric.reset()
