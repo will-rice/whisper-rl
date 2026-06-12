@@ -61,17 +61,20 @@ cp .env.example .env
 # Add your WANDB_API_KEY (and HUGGINGFACE_TOKEN if you hit rate limits)
 ```
 
-The default dataset is [`fsicoli/common_voice_21_0`](https://huggingface.co/datasets/fsicoli/common_voice_21_0),
-an unofficial Common Voice 21 mirror (CC0). It replaces the official
+The default dataset is [`fixie-ai/common_voice_17_0`](https://huggingface.co/datasets/fixie-ai/common_voice_17_0),
+an unofficial parquet Common Voice 17 mirror. It replaces the official
 `mozilla-foundation/common_voice_*` repos, which were removed from the Hub in
-October 2025. It is a **script-based** loader, so `trust_remote_code=True` is
-passed automatically. Column names follow the Common Voice convention
-(`sentence`, `audio`, `locale`); override them in `config.py` if your dataset
-differs.
+October 2025 (script-based mirrors like `fsicoli/common_voice_21_0` no longer
+load either: `datasets` >= 4 dropped script loaders). Column names follow the
+Common Voice convention (`sentence`, `audio`, `locale`); override them in
+`config.py` if your dataset differs.
+
+Audio decoding uses [`torchcodec`](https://github.com/pytorch/torchcodec),
+which needs the FFmpeg shared libraries (FFmpeg 4–7) installed on the host.
 
 ## Usage
 
-By default `train` streams **every Common Voice 21 locale** (auto-discovered
+By default `train` streams **every Common Voice 17 locale** (auto-discovered
 and interleaved), caps the number of streamed examples so a PoC run stays
 light, and finetunes `openai/whisper-tiny`. The language of each clip is
 auto-detected by Whisper:
@@ -99,17 +102,17 @@ uv run train --fast_dev_run --no_wandb
 All hyperparameters live in [`src/whisper_rl/config.py`](src/whisper_rl/config.py).
 Notable knobs:
 
-| Field                                    | Default                     | Meaning                                          |
-| ---------------------------------------- | --------------------------- | ------------------------------------------------ |
-| `base_model`                             | `openai/whisper-tiny`       | Multilingual Whisper checkpoint to finetune      |
-| `dataset_name`                           | `fsicoli/common_voice_21_0` | Common Voice 21 mirror (script loader)           |
-| `languages`                              | `None`                      | Locales to stream; `None` = all dataset locales  |
-| `num_generations`                        | `8`                         | Completions sampled per clip (group size)        |
-| `temperature`                            | `1.0`                       | Sampling temperature for rollouts                |
-| `kl_beta`                                | `0.04`                      | Weight of the KL penalty to the reference        |
-| `clip_eps`                               | `0.2`                       | PPO-style ratio clipping                         |
-| `learning_rate`                          | `1e-6`                      | AdamW learning rate (RL finetuning is sensitive) |
-| `max_train_samples` / `max_eval_samples` | `1024` / `256`              | Streamed slice sizes (`None` = full split)       |
+| Field                                    | Default                      | Meaning                                          |
+| ---------------------------------------- | ---------------------------- | ------------------------------------------------ |
+| `base_model`                             | `openai/whisper-tiny`        | Multilingual Whisper checkpoint to finetune      |
+| `dataset_name`                           | `fixie-ai/common_voice_17_0` | Parquet Common Voice 17 mirror                   |
+| `languages`                              | `None`                       | Locales to stream; `None` = all dataset locales  |
+| `num_generations`                        | `8`                          | Completions sampled per clip (group size)        |
+| `temperature`                            | `1.0`                        | Sampling temperature for rollouts                |
+| `kl_beta`                                | `0.04`                       | Weight of the KL penalty to the reference        |
+| `clip_eps`                               | `0.2`                        | PPO-style ratio clipping                         |
+| `learning_rate`                          | `1e-6`                       | AdamW learning rate (RL finetuning is sensitive) |
+| `max_train_samples` / `max_eval_samples` | `1024` / `256`               | Streamed slice sizes (`None` = full split)       |
 
 To train on a specific set of languages, set
 `languages=["en", "de", "fr", "zh-CN"]` (Common Voice locale codes).
@@ -137,7 +140,7 @@ uv run pre-commit run -a         # everything (matches CI)
   sensitive to learning rate, group size, and KL weight — expect to sweep.
 - Whisper-tiny is chosen for fast iteration; bump `base_model` to `whisper-base`
   or `whisper-small` once the loop is validated.
-- Streaming ~90 language configs and interleaving them is convenient but not
+- Streaming ~50 language configs and interleaving them is convenient but not
   perfectly balanced; for serious per-language evaluation, raise
   `max_eval_samples` (or set it to `None`) so every language is well represented.
 - One gradient update is taken per rollout (the importance ratio is 1), which
