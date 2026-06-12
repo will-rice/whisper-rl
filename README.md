@@ -75,8 +75,10 @@ which needs the FFmpeg shared libraries (FFmpeg 4–7) installed on the host.
 ## Usage
 
 By default `train` streams **every Common Voice 17 locale** (auto-discovered
-and interleaved), caps the number of streamed examples so a PoC run stays
-light, and finetunes `openai/whisper-tiny`. The language of each clip is
+and interleaved) and finetunes `openai/whisper-tiny`. Training audio is
+decoded and featurized on the fly in the dataloader workers, so the full
+splits train with flat memory; the eval slice is materialized once so every
+validation scores the exact same clips. The language of each clip is
 auto-detected by Whisper:
 
 ```bash
@@ -112,7 +114,7 @@ Notable knobs:
 | `kl_beta`                                | `0.04`                       | Weight of the KL penalty to the reference        |
 | `clip_eps`                               | `0.2`                        | PPO-style ratio clipping                         |
 | `learning_rate`                          | `1e-6`                       | AdamW learning rate (RL finetuning is sensitive) |
-| `max_train_samples` / `max_eval_samples` | `1024` / `256`               | Streamed slice sizes (`None` = full split)       |
+| `max_train_samples` / `max_eval_samples` | `None` / `256`               | Streamed slice caps (`None` = full split)        |
 
 To train on a specific set of languages, set
 `languages=["en", "de", "fr", "zh-CN"]` (Common Voice locale codes).

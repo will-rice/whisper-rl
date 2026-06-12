@@ -33,12 +33,13 @@ class Config(BaseModel):
     text_column: str = "sentence"
     locale_column: str = "locale"
     sample_rate: int = 16000
-    # Cap the number of streamed examples so a PoC run stays light. ``None``
-    # uses the full splits.
-    max_train_samples: int | None = 1024
+    # Cap the number of streamed examples. ``None`` uses the full split: the
+    # train side streams and featurizes on the fly, so any size is fine; the
+    # eval side is materialized in memory and should stay capped.
+    max_train_samples: int | None = None
     max_eval_samples: int | None = 256
-    batch_size: int = 4
-    num_workers: int = 4
+    batch_size: int = 8
+    num_workers: int = 8
 
     # GRPO.
     # Number of completions sampled per audio clip (the "group").
@@ -54,7 +55,8 @@ class Config(BaseModel):
     # Small constant added to the per-group std when normalizing advantages.
     advantage_eps: float = 1e-4
 
-    # Training.
+    # Training. The streamed train dataset has no length, so validation
+    # cadence is in optimizer steps and ``max_steps`` bounds the run.
     max_epochs: int = 1
     max_steps: int = 500
     learning_rate: float = 1e-6
@@ -62,4 +64,4 @@ class Config(BaseModel):
     weight_decay: float = 0.0
     warmup_steps: int = 20
     grad_clip: float = 1.0
-    val_check_interval: float = 0.5
+    val_check_interval: int = 250

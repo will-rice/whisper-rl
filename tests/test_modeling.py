@@ -14,7 +14,7 @@ def policy():
 
 
 def test_generate_strips_decoder_prompt(policy) -> None:
-    """transformers >= 5 returns only sampled tokens, with no forced prompt.
+    """Transformers >= 5 returns only sampled tokens, with no forced prompt.
 
     The GRPO loss slices completions relative to the prompt, so this contract
     must hold; if a transformers upgrade changes it, this test fails first.

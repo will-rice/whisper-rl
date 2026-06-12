@@ -2,6 +2,7 @@
 
 import logging
 import os
+from collections.abc import Iterator
 from typing import NamedTuple
 
 import torch
@@ -11,13 +12,19 @@ from datasets import (
     interleave_datasets,
     load_dataset,
 )
+from datasets import (
+    IterableDataset as HFIterableDataset,
+)
 from lightning.pytorch import LightningDataModule
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset
 from transformers import WhisperProcessor
 
 from whisper_rl.config import Config
 
 logger = logging.getLogger(__name__)
+
+# Examples buffered for approximate shuffling of the training stream.
+SHUFFLE_BUFFER_SIZE = 1000
 
 # (input_features, reference, common_voice_locale)
 Example = tuple[torch.Tensor, str, str]
@@ -38,13 +45,115 @@ class Batch(NamedTuple):
     languages: list[str]
 
 
-class SpeechDataset(Dataset):
-    """In-memory multilingual speech dataset materialized from a stream.
+def load_stream(config: Config, split: str) -> HFIterableDataset:
+    """Stream and interleave every configured locale for ``split``.
 
-    Several Common Voice locale configs are streamed and interleaved; only the
-    requested number of examples are pulled and their log-mel features
-    pre-computed. Streaming avoids downloading whole corpora, keeping
-    proof-of-concept runs light while remaining a map-style dataset.
+    Args:
+        config: Project configuration.
+        split: Dataset split to stream, e.g. ``"train"``.
+
+    Returns:
+        A Hugging Face streaming dataset with audio cast to
+        ``config.sample_rate``.
+    """
+    token = os.environ.get("HUGGINGFACE_TOKEN")
+    locales = config.languages
+    if locales is None:
+        locales = get_dataset_config_names(config.dataset_name, token=token)
+    streams = []
+    for locale in locales:
+        try:
+            stream = load_dataset(
+                config.dataset_name,
+                locale,
+                split=split,
+                streaming=True,
+                token=token,
+            )
+        except Exception as error:  # pragma: no cover - network/config issues
+            logger.warning("Skipping locale %s: %s", locale, error)
+            continue
+        stream = stream.cast_column(
+            config.audio_column,
+            Audio(sampling_rate=config.sample_rate),
+        )
+        streams.append(stream)
+
+    if not streams:
+        raise RuntimeError(f"No usable locales for {config.dataset_name!r} ({split}).")
+    if len(streams) == 1:
+        return streams[0]
+    return interleave_datasets(streams, stopping_strategy="all_exhausted")
+
+
+def prepare_example(
+    row: dict, config: Config, processor: WhisperProcessor
+) -> Example | None:
+    """Turn a streamed row into an :data:`Example`, or ``None`` if unusable.
+
+    Args:
+        row: A streamed dataset row.
+        config: Project configuration.
+        processor: Whisper processor used for feature extraction.
+
+    Returns:
+        The ``(input_features, reference, locale)`` example, or ``None`` when
+        the reference transcript is empty.
+    """
+    reference = str(row[config.text_column]).strip()
+    if not reference:
+        return None
+    locale = str(row[config.locale_column])
+    # ``Audio`` columns decode to torchcodec ``AudioDecoder`` objects;
+    # ``cast_column`` already resamples to ``config.sample_rate``.
+    samples = row[config.audio_column].get_all_samples()
+    features = processor.feature_extractor(
+        samples.data[0],
+        sampling_rate=config.sample_rate,
+        return_tensors="pt",
+    )
+    return (features.input_features[0], reference, locale)
+
+
+class SpeechDataset(Dataset):
+    """In-memory speech dataset materialized from a stream.
+
+    Used for evaluation: the slice is pulled once and its log-mel features
+    pre-computed, so repeated validation epochs cost no network traffic and
+    score the exact same clips.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        processor: WhisperProcessor,
+        split: str,
+        max_samples: int | None,
+    ) -> None:
+        dataset = load_stream(config, split)
+        if max_samples is not None:
+            dataset = dataset.take(max_samples)
+        self.examples: list[Example] = [
+            example
+            for row in dataset
+            if (example := prepare_example(row, config, processor)) is not None
+        ]
+
+    def __len__(self) -> int:
+        """Return the number of examples."""
+        return len(self.examples)
+
+    def __getitem__(self, index: int) -> Example:
+        """Return the ``(input_features, reference, language)`` example."""
+        return self.examples[index]
+
+
+class StreamingSpeechDataset(IterableDataset):
+    """Speech dataset that decodes and featurizes on the fly while training.
+
+    Wraps the Hugging Face stream (which shards itself across DataLoader
+    workers) with approximate shuffling, so arbitrarily large splits train
+    with flat memory and no startup materialization.
     """
 
     def __init__(
@@ -56,71 +165,18 @@ class SpeechDataset(Dataset):
     ) -> None:
         self.config = config
         self.processor = processor
-        self.examples: list[Example] = []
-
-        dataset = self._load_stream(split)
+        stream = load_stream(config, split)
+        stream = stream.shuffle(seed=config.seed, buffer_size=SHUFFLE_BUFFER_SIZE)
         if max_samples is not None:
-            dataset = dataset.take(max_samples)
+            stream = stream.take(max_samples)
+        self.stream = stream
 
-        for row in dataset:
-            reference = str(row[config.text_column]).strip()
-            if not reference:
-                continue
-            locale = str(row[config.locale_column])
-            # ``Audio`` columns decode to torchcodec ``AudioDecoder`` objects;
-            # ``cast_column`` already resamples to ``config.sample_rate``.
-            samples = row[config.audio_column].get_all_samples()
-            features = processor.feature_extractor(
-                samples.data[0],
-                sampling_rate=config.sample_rate,
-                return_tensors="pt",
-            )
-            self.examples.append((features.input_features[0], reference, locale))
-
-    def _resolve_languages(self, token: str | None) -> list[str]:
-        """Return the locale configs to stream for this dataset."""
-        if self.config.languages is not None:
-            return self.config.languages
-        return get_dataset_config_names(self.config.dataset_name, token=token)
-
-    def _load_stream(self, split: str):  # noqa: ANN202
-        """Stream and interleave every configured locale for ``split``."""
-        token = os.environ.get("HUGGINGFACE_TOKEN")
-        locales = self._resolve_languages(token)
-        streams = []
-        for locale in locales:
-            try:
-                stream = load_dataset(
-                    self.config.dataset_name,
-                    locale,
-                    split=split,
-                    streaming=True,
-                    token=token,
-                )
-            except Exception as error:  # pragma: no cover - network/config issues
-                logger.warning("Skipping locale %s: %s", locale, error)
-                continue
-            stream = stream.cast_column(
-                self.config.audio_column,
-                Audio(sampling_rate=self.config.sample_rate),
-            )
-            streams.append(stream)
-
-        if not streams:
-            raise RuntimeError(
-                f"No usable locales for {self.config.dataset_name!r} ({split})."
-            )
-        if len(streams) == 1:
-            return streams[0]
-        return interleave_datasets(streams, stopping_strategy="all_exhausted")
-
-    def __len__(self) -> int:
-        """Return the number of examples."""
-        return len(self.examples)
-
-    def __getitem__(self, index: int) -> Example:
-        """Return the ``(input_features, reference, language)`` example."""
-        return self.examples[index]
+    def __iter__(self) -> Iterator[Example]:
+        """Yield prepared examples from the shuffled stream."""
+        for row in self.stream:
+            example = prepare_example(row, self.config, self.processor)
+            if example is not None:
+                yield example
 
 
 def collate(examples: list[Example]) -> Batch:
@@ -147,12 +203,12 @@ class SpeechDataModule(LightningDataModule):
         super().__init__()
         self.config = config
         self.processor = processor
-        self.train_dataset: SpeechDataset | None = None
+        self.train_dataset: StreamingSpeechDataset | None = None
         self.eval_dataset: SpeechDataset | None = None
 
     def setup(self, stage: str | None = None) -> None:
-        """Materialize the train and eval datasets."""
-        self.train_dataset = SpeechDataset(
+        """Create the streamed train dataset and materialize the eval set."""
+        self.train_dataset = StreamingSpeechDataset(
             self.config,
             self.processor,
             self.config.train_split,
@@ -166,12 +222,11 @@ class SpeechDataModule(LightningDataModule):
         )
 
     def train_dataloader(self) -> DataLoader:
-        """Return the training dataloader."""
+        """Return the training dataloader (shuffled by the stream itself)."""
         assert self.train_dataset is not None
         return DataLoader(
             self.train_dataset,
             batch_size=self.config.batch_size,
-            shuffle=True,
             num_workers=self.config.num_workers,
             collate_fn=collate,
             drop_last=True,
