@@ -2,18 +2,21 @@
 
 import pytest
 import torch
+from transformers import WhisperForConditionalGeneration
 
 from whisper_rl.config import Config
 from whisper_rl.modeling import build_policy, decoder_prompt
 
 
 @pytest.fixture(scope="module")
-def policy():
+def policy() -> WhisperForConditionalGeneration:
     """The real (tiny) Whisper policy; pins the generate() output contract."""
     return build_policy(Config())
 
 
-def test_generate_strips_decoder_prompt(policy) -> None:
+def test_generate_strips_decoder_prompt(
+    policy: WhisperForConditionalGeneration,
+) -> None:
     """Transformers >= 5 returns only sampled tokens, with no forced prompt.
 
     The GRPO loss slices completions relative to the prompt, so this contract
@@ -27,7 +30,9 @@ def test_generate_strips_decoder_prompt(policy) -> None:
     assert (sequences != start).all()
 
 
-def test_decoder_prompt_matches_whisper_forced_tokens(policy) -> None:
+def test_decoder_prompt_matches_whisper_forced_tokens(
+    policy: WhisperForConditionalGeneration,
+) -> None:
     """The reconstructed prompt is the 4-token prefix generate() conditions on."""
     config = policy.generation_config
     features = torch.zeros(2, 80, 3000)
