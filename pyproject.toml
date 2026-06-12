@@ -1,23 +1,28 @@
 [project]
-name = "template"
+name = "whisper-rl"
 version = "0.1.0"
-description = "A general purpose machine learning project template."
+description = "Finetuning Whisper with GRPO using word error rate as the reward."
 readme = "README.md"
 authors = [{ name = "Will Rice", email = "wrice20@gmail.com" }]
 requires-python = ">=3.12"
 dependencies = [
+  "datasets>=3.2.0",
   "git-python>=1.0.3",
+  "jiwer>=3.1.0",
+  "librosa>=0.10.2",
   "lightning>=2.5.5",
-  "ty>=0.0.18",
   "pre-commit>=4.1.0",
   "pydantic>=2.12.2",
   "pydocstyle>=6.3.0",
   "pytest>=8.3.4",
   "python-dotenv>=1.1.1",
   "ruff>=0.9.7",
+  "soundfile>=0.12.1",
   "torch>=2.8.0",
   "torchaudio>=2.8.0",
   "torchvision>=0.23.0",
+  "transformers>=4.48.0",
+  "ty>=0.0.18",
   "wandb>=0.22.2",
 ]
 
@@ -26,10 +31,10 @@ requires = ["uv_build>=0.9.2"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = ["template"]
+module-name = ["whisper_rl"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["template"]
+known-first-party = ["whisper_rl"]
 
 [tool.ruff.lint]
 select = ["C", "E", "F", "I", "W", "D", "N", "B", "PTH", "ANN"]
@@ -43,4 +48,4 @@ convention = "google"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [project.scripts]
-train = "template.scripts.train:main"
+train = "whisper_rl.scripts.train:main"

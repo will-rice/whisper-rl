@@ -1,222 +1,145 @@
-# Machine Learning Project Template
+# whisper-rl
 
-A batteries-included template for PyTorch machine learning projects using Lightning, wandb, and modern Python tooling.
+A proof-of-concept for finetuning [Whisper](https://huggingface.co/openai/whisper-tiny)
+with **GRPO** (Group Relative Policy Optimization) using **word error rate (WER)**
+as the reward, **across many languages**.
 
-## Features
+Instead of cross-entropy against a single reference, the model samples a group
+of candidate transcriptions per audio clip, scores each one by its WER against
+the ground truth, and is nudged toward the lower-error candidates with a
+policy-gradient objective regularized by a KL penalty to the original model.
 
-- **PyTorch Lightning**: Structured training framework with minimal boilerplate
-- **Pydantic Configuration**: Type-safe configuration management
-- **Weights & Biases**: Integrated experiment tracking
-- **Modern Tooling**: Built with `uv` for fast dependency management
-- **Code Quality**: Pre-configured with `ruff`, `mypy`, `pytest`, and `pre-commit` hooks
-- **Git-based Versioning**: Automatic experiment naming using git commit hashes
+## How it works
 
-## Project Structure
+For each audio clip in a batch:
+
+1. **Sample a group.** Draw `num_generations` transcriptions from the current
+   policy with temperature sampling. Whisper auto-detects each clip's language
+   and prepends its fixed 4-token decoder prompt
+   (`<|sot|><|lang|><|transcribe|><|notimestamps|>`); GRPO scores only the
+   transcription tokens that follow.
+2. **Score.** Reward each completion with `-WER` (post text-normalization)
+   against the reference transcript. Lower error → higher reward.
+3. **Group-relative advantages.** Center and scale the rewards within each
+   group: `A = (r - mean) / (std + eps)`. No value network is needed — the
+   group mean is the baseline.
+4. **Policy update.** Optimize the clipped GRPO objective on the per-token
+   log-probabilities of the sampled completions, with a per-token KL penalty
+   toward a frozen reference copy of the initial model.
+
+The reward, advantage, log-prob, and loss math live in
+[`grpo.py`](src/whisper_rl/grpo.py) and [`rewards.py`](src/whisper_rl/rewards.py)
+and are covered by unit tests.
+
+## Project structure
 
 ```
-.
-├── src/template/
-│   ├── config.py              # Pydantic configuration classes
-│   ├── lightning_module.py    # Base Lightning module
-│   ├── datasets/              # Dataset implementations
-│   ├── modeling/              # Model architectures
-│   └── scripts/
-│       └── train.py          # Training script
-├── tests/                     # Test files
-├── pyproject.toml            # Project metadata and dependencies
-├── .pre-commit-config.yaml   # Pre-commit hooks configuration
-└── .env.example              # Example environment variables
+src/whisper_rl/
+├── config.py              # Pydantic hyperparameter config
+├── rewards.py             # WER normalization + reward
+├── grpo.py                # Advantages, token log-probs, GRPO loss (pure torch)
+├── metrics.py             # Per-language corpus-WER accumulator
+├── modeling/__init__.py   # Whisper policy / frozen reference builders
+├── datasets/__init__.py   # Streamed multilingual Common Voice + DataModule
+├── lightning_module.py    # WhisperGRPOModule (the training loop)
+└── scripts/train.py       # CLI entry point (the `train` command)
+tests/                     # Unit tests for grpo, rewards, metrics, datasets
 ```
 
-## Quick Start
+## Setup
 
-### 1. Install uv
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-### 2. Use this template for a new project
-
-When creating a new project from this template:
-
-1. Clone or fork this repository
-2. Rename the `src/template` directory to your project name:
-   ```bash
-   mv src/template src/your_project_name
-   ```
-3. Update `pyproject.toml`:
-   - Change `name = "template"` to your project name
-   - Update `module-name = ["template"]` to your project name
-   - Update the `train` script path in `[project.scripts]`
-4. Update import statements in Python files to use your new project name
-
-### 3. Install dependencies
+### 1. Install dependencies
 
 ```bash
 uv sync
 ```
 
-### 4. Set up environment variables
-
-Copy the example environment file and add your API keys:
+### 2. Configure credentials
 
 ```bash
 cp .env.example .env
-# Edit .env and add your wandb API key and other credentials
+# Add your WANDB_API_KEY (and HUGGINGFACE_TOKEN if you hit rate limits)
 ```
 
-### 5. Install pre-commit hooks
-
-```bash
-uv run pre-commit install
-```
+The default dataset is [`fsicoli/common_voice_21_0`](https://huggingface.co/datasets/fsicoli/common_voice_21_0),
+an unofficial Common Voice 21 mirror (CC0). It replaces the official
+`mozilla-foundation/common_voice_*` repos, which were removed from the Hub in
+October 2025. It is a **script-based** loader, so `trust_remote_code=True` is
+passed automatically. Column names follow the Common Voice convention
+(`sentence`, `audio`, `locale`); override them in `config.py` if your dataset
+differs.
 
 ## Usage
 
-### Training
-
-Run the training script:
+By default `train` streams **every Common Voice 21 locale** (auto-discovered
+and interleaved), caps the number of streamed examples so a PoC run stays
+light, and finetunes `openai/whisper-tiny`. The language of each clip is
+auto-detected by Whisper:
 
 ```bash
-uv run train <data_root> --project my-project --num_devices 1
+uv run train
 ```
 
-Available arguments:
+Useful flags:
 
-- `data_root`: Path to your dataset (required)
-- `--project`: Wandb project name (default: "jigsaw-2025")
-- `--num_devices`: Number of GPUs to use (default: 1)
-- `--num_workers`: Number of data loading workers (default: 12)
-- `--log_root`: Directory for logs and checkpoints (default: "logs")
-- `--checkpoint_path`: Resume from checkpoint
-- `--weights_path`: Load model weights
-- `--debug`: Enable debug mode
-- `--fast_dev_run`: Run a quick test with minimal data
+- `--num_devices`: number of GPUs (default `1`)
+- `--no_wandb`: disable Weights & Biases logging
+- `--fast_dev_run`: run a single train/val batch to smoke-test the loop
+- `--checkpoint_path`: resume from a Lightning checkpoint
+- `--log_root`: directory for checkpoints and logs (default `logs`)
+
+A quick end-to-end smoke test without external logging:
+
+```bash
+uv run train --fast_dev_run --no_wandb
+```
 
 ### Configuration
 
-Edit `src/template/config.py` to customize hyperparameters:
+All hyperparameters live in [`src/whisper_rl/config.py`](src/whisper_rl/config.py).
+Notable knobs:
 
-```python
-from pydantic import BaseModel
+| Field                                    | Default                     | Meaning                                          |
+| ---------------------------------------- | --------------------------- | ------------------------------------------------ |
+| `base_model`                             | `openai/whisper-tiny`       | Multilingual Whisper checkpoint to finetune      |
+| `dataset_name`                           | `fsicoli/common_voice_21_0` | Common Voice 21 mirror (script loader)           |
+| `languages`                              | `None`                      | Locales to stream; `None` = all dataset locales  |
+| `num_generations`                        | `8`                         | Completions sampled per clip (group size)        |
+| `temperature`                            | `1.0`                       | Sampling temperature for rollouts                |
+| `kl_beta`                                | `0.04`                      | Weight of the KL penalty to the reference        |
+| `clip_eps`                               | `0.2`                       | PPO-style ratio clipping                         |
+| `learning_rate`                          | `1e-6`                      | AdamW learning rate (RL finetuning is sensitive) |
+| `max_train_samples` / `max_eval_samples` | `1024` / `256`              | Streamed slice sizes (`None` = full split)       |
 
-class Config(BaseModel):
-    # Reproducibility
-    seed: int = 42
+To train on a specific set of languages, set
+`languages=["en", "de", "fr", "zh-CN"]` (Common Voice locale codes).
 
-    # Data
-    test_split: float = 0.1
-    batch_size: int = 16
+### Metrics
 
-    # Training
-    max_epochs: int = 200
-    early_stopping_patience: int = 30
-    learning_rate: float = 1e-4
-    min_learning_rate: float = 1e-6
-    weight_decay: float = 1e-2
-```
-
-### Implementing Your Model
-
-1. **Create your Lightning module** by inheriting from `BaseLightningModule`:
-
-   ```python
-   from template.lightning_module import BaseLightningModule
-
-   class MyModel(BaseLightningModule):
-       def training_step(self, batch, batch_idx):
-           # Your training logic here
-           pass
-
-       def validation_step(self, batch, batch_idx):
-           # Your validation logic here
-           pass
-   ```
-
-2. **Add your dataset** in `src/template/datasets/`:
-
-   ```python
-   from torch.utils.data import Dataset
-
-   class MyDataset(Dataset):
-       def __init__(self, data_root, config):
-           # Initialize your dataset
-           pass
-   ```
-
-3. **Update the training script** to use your model and dataset
+Logged during training: `train/loss`, `train/reward`, `train/kl`,
+`train/completion_len`. Validation reports corpus WER overall (`val/wer`) **and
+per language** (`val/wer_en`, `val/wer_de`, …), so you can see which languages
+improve or regress.
 
 ## Development
 
-### Running Tests
-
 ```bash
-uv run pytest
+uv run pytest                    # tests
+uv run ruff check src/ tests/    # lint
+uv run ruff format src/ tests/   # format
+uv run ty check                  # type check
+uv run pre-commit run -a         # everything (matches CI)
 ```
 
-### Type Checking
+## Notes & caveats
 
-```bash
-uv run mypy src/
-```
-
-### Linting and Formatting
-
-```bash
-uv run ruff check src/
-uv run ruff format src/
-```
-
-### Pre-commit Hooks
-
-Pre-commit hooks will automatically run on every commit to ensure code quality. To run manually:
-
-```bash
-uv run pre-commit run --all-files
-```
-
-## Dependencies
-
-Core dependencies:
-
-- **PyTorch**: Deep learning framework (with GPU support)
-- **Lightning**: High-level PyTorch wrapper
-- **Pydantic**: Data validation and configuration
-- **Wandb**: Experiment tracking
-- **python-dotenv**: Environment variable management
-
-Development tools:
-
-- **ruff**: Fast Python linter and formatter
-- **mypy**: Static type checker
-- **pytest**: Testing framework
-- **pre-commit**: Git hooks for code quality
-
-## Build System
-
-This project uses `uv_build` as the build backend, which is significantly faster than traditional build systems like setuptools or hatchling.
-
-To build the project:
-
-```bash
-uv build
-```
-
-## License
-
-See [LICENSE](LICENSE) file for details.
-
-## Contributing
-
-1. Create a new branch for your feature
-2. Make your changes
-3. Ensure all tests pass and pre-commit hooks succeed
-4. Submit a pull request
-
-## Tips
-
-- Experiment names automatically include the git commit hash for reproducibility
-- Use `.env` for sensitive information (API keys, credentials)
-- The config system uses Pydantic for type safety and validation
-- Lightning automatically handles distributed training, gradient accumulation, and mixed precision
+- This is a **proof of concept**, not a tuned recipe. RL finetuning of ASR is
+  sensitive to learning rate, group size, and KL weight — expect to sweep.
+- Whisper-tiny is chosen for fast iteration; bump `base_model` to `whisper-base`
+  or `whisper-small` once the loop is validated.
+- Streaming ~90 language configs and interleaving them is convenient but not
+  perfectly balanced; for serious per-language evaluation, raise
+  `max_eval_samples` (or set it to `None`) so every language is well represented.
+- One gradient update is taken per rollout (the importance ratio is 1), which
+  keeps the implementation on-policy and simple. Add inner epochs over cached
+  rollouts if you want the full off-policy PPO-style reuse.
