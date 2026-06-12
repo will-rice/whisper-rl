@@ -113,7 +113,8 @@ class PushBestToHub(Callback):
         if wer is None or float(wer) >= self.best_wer:
             return
         self.best_wer = float(wer)
-        pl_module.policy.push_to_hub(self.repo_name)  # ty: ignore[unresolved-attribute]
+        assert isinstance(pl_module, WhisperGRPOModule)
+        pl_module.policy.push_to_hub(self.repo_name)  # ty: ignore[invalid-argument-type]
         self.processor.push_to_hub(self.repo_name)
         logging.info(
             "Pushed new best (val/wer=%.4f) to the Hub as %s",
