@@ -15,10 +15,10 @@ from whisper_rl.grpo import (
 )
 from whisper_rl.metrics import LanguageWER
 from whisper_rl.modeling import (
-    PROMPT_LEN,
     build_policy,
     build_processor,
     build_reference,
+    decoder_prompt,
     repeat_features,
 )
 from whisper_rl.rewards import wer_reward
@@ -44,7 +44,6 @@ class WhisperGRPOModule(LightningModule):
         self.processor = processor if processor is not None else build_processor(config)
         self.policy = build_policy(config)
         self.reference = build_reference(config)
-        self.prompt_len = PROMPT_LEN
         eos = self.policy.config.eos_token_id
         self.eos_token_id = int(eos)  # ty: ignore[invalid-argument-type]
         self.val_metric = LanguageWER()
@@ -52,9 +51,10 @@ class WhisperGRPOModule(LightningModule):
     def _generate(self, input_features: torch.Tensor, sample: bool) -> torch.Tensor:
         """Generate transcriptions, auto-detecting each clip's language.
 
-        Whisper detects the language and prepends a fixed 4-token decoder
-        prompt (``<|sot|><|lang|><|transcribe|><|notimestamps|>``) before the
-        transcription tokens.
+        Whisper detects the language and conditions on a 4-token decoder
+        prompt (``<|sot|><|lang|><|transcribe|><|notimestamps|>``), but
+        transformers strips it from the output, so the returned ids are the
+        transcription tokens only.
 
         Args:
             input_features: Features of shape ``(batch, n_mels, frames)``.
@@ -62,7 +62,7 @@ class WhisperGRPOModule(LightningModule):
                 (validation).
 
         Returns:
-            Generated token ids including the 4-token decoder prompt.
+            Generated completion token ids, without the decoder prompt.
         """
         with torch.no_grad():
             if sample:
@@ -90,25 +90,29 @@ class WhisperGRPOModule(LightningModule):
         self,
         model: torch.nn.Module,
         input_features: torch.Tensor,
-        sequences: torch.Tensor,
+        prompt: torch.Tensor,
+        completion_ids: torch.Tensor,
     ) -> torch.Tensor:
-        """Per-token log-probs of the completion region of ``sequences``.
+        """Per-token log-probs of ``completion_ids`` conditioned on ``prompt``.
 
         Args:
             model: The policy or reference Whisper model.
-            input_features: Encoder features matching ``sequences``.
-            sequences: Full generated sequences (prompt + completion).
+            input_features: Encoder features matching the sequences.
+            prompt: Decoder prompt token ids of shape ``(batch, prompt_len)``.
+            completion_ids: Generated completion ids of shape
+                ``(batch, completion_len)``.
 
         Returns:
             Per-token log-probs of shape ``(batch, completion_len)``.
         """
+        sequences = torch.cat([prompt, completion_ids], dim=1)
         decoder_input_ids = sequences[:, :-1]
         targets = sequences[:, 1:]
         logits = model(
             input_features=input_features, decoder_input_ids=decoder_input_ids
         ).logits
         log_probs = sequence_log_probs(logits, targets)
-        return log_probs[:, self.prompt_len - 1 :]
+        return log_probs[:, prompt.size(1) - 1 :]
 
     def training_step(self, batch: Batch, batch_idx: int) -> torch.Tensor:
         """Run one GRPO update on a batch of audio clips."""
@@ -116,8 +120,7 @@ class WhisperGRPOModule(LightningModule):
         features = repeat_features(batch.input_features, num_gen)
         references = [ref for ref in batch.references for _ in range(num_gen)]
 
-        sequences = self._generate(features, sample=True)
-        completion_ids = sequences[:, self.prompt_len :]
+        completion_ids = self._generate(features, sample=True)
         hypotheses = self.processor.batch_decode(
             completion_ids, skip_special_tokens=True
         )
@@ -132,10 +135,15 @@ class WhisperGRPOModule(LightningModule):
         )
         advantages = group_advantages(rewards, num_gen, self.config.advantage_eps)
 
-        policy_log_probs = self._completion_log_probs(self.policy, features, sequences)
+        # Detect once per clip, then repeat to match the sampled group.
+        prompt = decoder_prompt(self.policy, batch.input_features, self.config.task)
+        prompt = prompt.repeat_interleave(num_gen, dim=0)
+        policy_log_probs = self._completion_log_probs(
+            self.policy, features, prompt, completion_ids
+        )
         with torch.no_grad():
             ref_log_probs = self._completion_log_probs(
-                self.reference, features, sequences
+                self.reference, features, prompt, completion_ids
             )
         old_log_probs = policy_log_probs.detach()
         mask = completion_mask_from_ids(completion_ids, self.eos_token_id)
@@ -173,8 +181,7 @@ class WhisperGRPOModule(LightningModule):
 
     def validation_step(self, batch: Batch, batch_idx: int) -> None:
         """Greedy-decode the batch and accumulate per-language WER."""
-        sequences = self._generate(batch.input_features, sample=False)
-        completion_ids = sequences[:, self.prompt_len :]
+        completion_ids = self._generate(batch.input_features, sample=False)
         hypotheses = self.processor.batch_decode(
             completion_ids, skip_special_tokens=True
         )

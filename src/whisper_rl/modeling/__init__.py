@@ -5,12 +5,6 @@ from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 from whisper_rl.config import Config
 
-# Whisper forces a 4-token decoder prompt before the transcription:
-# ``[<|startoftranscript|>, <|lang|>, <|transcribe|>, <|notimestamps|>]``.
-# The language token varies per clip but the length is constant, which is all
-# we need to separate the prompt from sampled completion tokens.
-PROMPT_LEN = 4
-
 
 def build_processor(config: Config) -> WhisperProcessor:
     """Load the (multilingual) Whisper processor for ``config.base_model``.
@@ -58,6 +52,41 @@ def build_reference(config: Config) -> WhisperForConditionalGeneration:
     model.eval()
     model.requires_grad_(False)
     return model
+
+
+def decoder_prompt(
+    model: WhisperForConditionalGeneration,
+    input_features: torch.Tensor,
+    task: str,
+) -> torch.Tensor:
+    """Reconstruct the decoder prompt that ``generate`` conditioned on.
+
+    Whisper forces ``[<|startoftranscript|>, <|lang|>, <|task|>,
+    <|notimestamps|>]`` before the transcription, but transformers >= 5 strips
+    it from the returned sequences. Language detection is a deterministic
+    argmax over the language logits, so re-running it reproduces exactly the
+    prompt used during generation.
+
+    Args:
+        model: The Whisper model that generated (or will generate) with
+            language auto-detection.
+        input_features: Log-mel features of shape ``(batch, n_mels, frames)``.
+        task: The Whisper task, e.g. ``"transcribe"``.
+
+    Returns:
+        Prompt token ids of shape ``(batch, 4)``.
+    """
+    generation_config = model.generation_config
+    with torch.no_grad():
+        lang_ids = model.detect_language(input_features=input_features)  # ty: ignore[invalid-argument-type]
+    lang = lang_ids.unsqueeze(1)
+    start = torch.full_like(lang, generation_config.decoder_start_token_id)
+    task_id = torch.full_like(lang, generation_config.task_to_id[task])  # ty: ignore[unresolved-attribute]
+    no_timestamps = torch.full_like(
+        lang,
+        generation_config.no_timestamps_token_id,  # ty: ignore[unresolved-attribute]
+    )
+    return torch.cat([start, lang, task_id, no_timestamps], dim=1)
 
 
 def repeat_features(input_features: torch.Tensor, num_generations: int) -> torch.Tensor:
