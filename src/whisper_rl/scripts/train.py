@@ -6,7 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from git import Repo
-from lightning import Trainer, seed_everything
+from lightning import LightningModule, Trainer, seed_everything
 from lightning.pytorch.callbacks import (
     Callback,
     LearningRateMonitor,
@@ -73,6 +73,8 @@ def main() -> None:
     if logger:
         # LearningRateMonitor raises if the trainer has no logger.
         callbacks.append(LearningRateMonitor(logging_interval="step"))
+    if not args.fast_dev_run:
+        callbacks.append(PushBestToHub(experiment_name, processor))
 
     trainer = Trainer(
         max_epochs=config.max_epochs,
@@ -87,41 +89,37 @@ def main() -> None:
     )
     trainer.fit(module, datamodule=datamodule, ckpt_path=args.checkpoint_path)
 
-    if not args.fast_dev_run and trainer.is_global_zero:
-        push_best_checkpoint(checkpoint, config, processor, experiment_name)
 
+class PushBestToHub(Callback):
+    """Push the policy to the Hugging Face Hub whenever validation WER improves.
 
-def push_best_checkpoint(
-    checkpoint: ModelCheckpoint,
-    config: Config,
-    processor: WhisperProcessor,
-    experiment_name: str,
-) -> None:
-    """Upload the best checkpoint's policy to the Hugging Face Hub.
-
-    The Lightning checkpoint bundles the frozen reference model and optimizer
-    state, so only the trained policy (plus the processor) is pushed, in
-    standard ``transformers`` format under the authenticated user's namespace.
-
-    Args:
-        checkpoint: The fitted checkpoint callback tracking the best model.
-        config: Project configuration.
-        processor: The Whisper processor used in training.
-        experiment_name: Hub repository name for the upload.
+    The live module already holds the weights that ModelCheckpoint is about to
+    save as the new best, so they are uploaded directly — in standard
+    ``transformers`` format, without the frozen reference model and optimizer
+    state bundled in the Lightning checkpoint. A crashed run keeps its
+    best-so-far model on the Hub.
     """
-    module = WhisperGRPOModule.load_from_checkpoint(
-        checkpoint.best_model_path,
-        map_location="cpu",
-        config=config,
-        processor=processor,
-    )
-    module.policy.push_to_hub(experiment_name)  # ty: ignore[invalid-argument-type]
-    processor.push_to_hub(experiment_name)
-    logging.info(
-        "Pushed best checkpoint (%s) to the Hub as %s",
-        checkpoint.best_model_path,
-        experiment_name,
-    )
+
+    def __init__(self, repo_name: str, processor: WhisperProcessor) -> None:
+        self.repo_name = repo_name
+        self.processor = processor
+        self.best_wer = float("inf")
+
+    def on_validation_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        """Upload the policy and processor after a new best validation WER."""
+        if trainer.sanity_checking or not trainer.is_global_zero:
+            return
+        wer = trainer.callback_metrics.get("val/wer")
+        if wer is None or float(wer) >= self.best_wer:
+            return
+        self.best_wer = float(wer)
+        pl_module.policy.push_to_hub(self.repo_name)  # ty: ignore[unresolved-attribute]
+        self.processor.push_to_hub(self.repo_name)
+        logging.info(
+            "Pushed new best (val/wer=%.4f) to the Hub as %s",
+            self.best_wer,
+            self.repo_name,
+        )
 
 
 if __name__ == "__main__":

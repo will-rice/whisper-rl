@@ -94,9 +94,10 @@ Useful flags:
 - `--log_root`: directory for checkpoints and logs (default `logs`)
 - `--run_suffix`: experiment-name suffix to disambiguate sweep runs
 
-After training, the best checkpoint's policy and processor are pushed to the
+Whenever validation WER improves, the policy and processor are pushed to the
 Hugging Face Hub under the experiment name (log in with `hf auth login`
-first); `--fast_dev_run` skips the upload.
+first), so even an interrupted run keeps its best model; `--fast_dev_run`
+skips the upload.
 
 A quick end-to-end smoke test without external logging:
 
