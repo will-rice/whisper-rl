@@ -65,7 +65,7 @@ def main() -> None:
             monitor="val/wer",
             mode="min",
             save_top_k=1,
-            filename="{step}-{val_wer:.3f}",
+            filename="{step}-{val/wer:.3f}",
             auto_insert_metric_name=False,
         ),
     ]
