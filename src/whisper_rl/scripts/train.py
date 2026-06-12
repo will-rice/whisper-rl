@@ -52,7 +52,6 @@ def main() -> None:
         )
     )
     callbacks: list[Callback] = [
-        LearningRateMonitor(logging_interval="step"),
         ModelCheckpoint(
             dirpath=str(experiment_path),
             monitor="val/wer",
@@ -62,6 +61,9 @@ def main() -> None:
             auto_insert_metric_name=False,
         ),
     ]
+    if logger:
+        # LearningRateMonitor raises if the trainer has no logger.
+        callbacks.append(LearningRateMonitor(logging_interval="step"))
 
     trainer = Trainer(
         max_epochs=config.max_epochs,
