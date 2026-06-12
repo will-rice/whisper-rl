@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [{ name = "Will Rice", email = "wrice20@gmail.com" }]
 requires-python = ">=3.12"
 dependencies = [
-  "datasets>=3.2.0",
+  "datasets>=4.0.0",
   "git-python>=1.0.3",
   "jiwer>=3.1.0",
   "librosa>=0.10.2",
@@ -20,6 +20,7 @@ dependencies = [
   "soundfile>=0.12.1",
   "torch>=2.8.0",
   "torchaudio>=2.8.0",
+  "torchcodec>=0.6,<0.7",
   "torchvision>=0.23.0",
   "transformers>=4.48.0",
   "ty>=0.0.18",

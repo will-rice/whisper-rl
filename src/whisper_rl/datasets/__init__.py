@@ -67,9 +67,11 @@ class SpeechDataset(Dataset):
             if not reference:
                 continue
             locale = str(row[config.locale_column])
-            audio = row[config.audio_column]
+            # ``Audio`` columns decode to torchcodec ``AudioDecoder`` objects;
+            # ``cast_column`` already resamples to ``config.sample_rate``.
+            samples = row[config.audio_column].get_all_samples()
             features = processor.feature_extractor(
-                audio["array"],
+                samples.data[0],
                 sampling_rate=config.sample_rate,
                 return_tensors="pt",
             )
@@ -79,9 +81,7 @@ class SpeechDataset(Dataset):
         """Return the locale configs to stream for this dataset."""
         if self.config.languages is not None:
             return self.config.languages
-        return get_dataset_config_names(
-            self.config.dataset_name, trust_remote_code=True, token=token
-        )
+        return get_dataset_config_names(self.config.dataset_name, token=token)
 
     def _load_stream(self, split: str):  # noqa: ANN202
         """Stream and interleave every configured locale for ``split``."""
@@ -95,7 +95,6 @@ class SpeechDataset(Dataset):
                     locale,
                     split=split,
                     streaming=True,
-                    trust_remote_code=True,
                     token=token,
                 )
             except Exception as error:  # pragma: no cover - network/config issues

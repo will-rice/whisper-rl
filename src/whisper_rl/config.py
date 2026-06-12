@@ -18,10 +18,10 @@ class Config(BaseModel):
     task: str = "transcribe"
 
     # Data.
-    # Unofficial Common Voice 21 mirror (the official mozilla-foundation repos
-    # were removed from the Hub in Oct 2025). It is a script-based loader, so
-    # ``trust_remote_code=True`` is required.
-    dataset_name: str = "fsicoli/common_voice_21_0"
+    # Parquet Common Voice 17 mirror (the official mozilla-foundation repos
+    # were removed from the Hub in Oct 2025, and ``datasets`` >= 4 dropped
+    # script-based loaders entirely).
+    dataset_name: str = "fixie-ai/common_voice_17_0"
     # Common Voice locale configs to stream and interleave. ``None`` means
     # "every locale in the dataset" (auto-discovered). The clip's language is
     # auto-detected by Whisper at generation time; the locale is used only to
