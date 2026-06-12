@@ -28,6 +28,12 @@ def main() -> None:
     parser.add_argument("--checkpoint_path", default=None, type=Path)
     parser.add_argument("--no_wandb", action="store_true")
     parser.add_argument("--fast_dev_run", action="store_true")
+    parser.add_argument(
+        "--run_suffix",
+        default="",
+        type=str,
+        help="Suffix for the experiment name, e.g. a sweep configuration.",
+    )
     args = parser.parse_args()
     load_dotenv()
 
@@ -37,6 +43,8 @@ def main() -> None:
     git_hash = Repo().head.object.hexsha[:7]
     model_name = config.base_model.split("/")[-1]
     experiment_name = f"{model_name}-grpo-{git_hash}"
+    if args.run_suffix:
+        experiment_name = f"{experiment_name}-{args.run_suffix}"
     experiment_path = args.log_root / experiment_name
     experiment_path.mkdir(exist_ok=True, parents=True)
 
