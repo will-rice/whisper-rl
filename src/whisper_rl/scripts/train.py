@@ -1,5 +1,6 @@
 """Train Whisper with GRPO on word error rate."""
 
+import logging
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from lightning.pytorch.callbacks import (
     ModelCheckpoint,
 )
 from lightning.pytorch.loggers import WandbLogger
+from transformers import WhisperProcessor
 
 from whisper_rl.config import Config
 from whisper_rl.datasets import SpeechDataModule
@@ -59,16 +61,15 @@ def main() -> None:
             project=args.project, name=experiment_name, save_dir=str(args.log_root)
         )
     )
-    callbacks: list[Callback] = [
-        ModelCheckpoint(
-            dirpath=str(experiment_path),
-            monitor="val/wer",
-            mode="min",
-            save_top_k=1,
-            filename="{step}-{val/wer:.3f}",
-            auto_insert_metric_name=False,
-        ),
-    ]
+    checkpoint = ModelCheckpoint(
+        dirpath=str(experiment_path),
+        monitor="val/wer",
+        mode="min",
+        save_top_k=1,
+        filename="{step}-{val/wer:.3f}",
+        auto_insert_metric_name=False,
+    )
+    callbacks: list[Callback] = [checkpoint]
     if logger:
         # LearningRateMonitor raises if the trainer has no logger.
         callbacks.append(LearningRateMonitor(logging_interval="step"))
@@ -85,6 +86,42 @@ def main() -> None:
         default_root_dir=str(experiment_path),
     )
     trainer.fit(module, datamodule=datamodule, ckpt_path=args.checkpoint_path)
+
+    if not args.fast_dev_run and trainer.is_global_zero:
+        push_best_checkpoint(checkpoint, config, processor, experiment_name)
+
+
+def push_best_checkpoint(
+    checkpoint: ModelCheckpoint,
+    config: Config,
+    processor: WhisperProcessor,
+    experiment_name: str,
+) -> None:
+    """Upload the best checkpoint's policy to the Hugging Face Hub.
+
+    The Lightning checkpoint bundles the frozen reference model and optimizer
+    state, so only the trained policy (plus the processor) is pushed, in
+    standard ``transformers`` format under the authenticated user's namespace.
+
+    Args:
+        checkpoint: The fitted checkpoint callback tracking the best model.
+        config: Project configuration.
+        processor: The Whisper processor used in training.
+        experiment_name: Hub repository name for the upload.
+    """
+    module = WhisperGRPOModule.load_from_checkpoint(
+        checkpoint.best_model_path,
+        map_location="cpu",
+        config=config,
+        processor=processor,
+    )
+    module.policy.push_to_hub(experiment_name)  # ty: ignore[invalid-argument-type]
+    processor.push_to_hub(experiment_name)
+    logging.info(
+        "Pushed best checkpoint (%s) to the Hub as %s",
+        checkpoint.best_model_path,
+        experiment_name,
+    )
 
 
 if __name__ == "__main__":

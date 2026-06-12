@@ -92,6 +92,11 @@ Useful flags:
 - `--fast_dev_run`: run a single train/val batch to smoke-test the loop
 - `--checkpoint_path`: resume from a Lightning checkpoint
 - `--log_root`: directory for checkpoints and logs (default `logs`)
+- `--run_suffix`: experiment-name suffix to disambiguate sweep runs
+
+After training, the best checkpoint's policy and processor are pushed to the
+Hugging Face Hub under the experiment name (log in with `hf auth login`
+first); `--fast_dev_run` skips the upload.
 
 A quick end-to-end smoke test without external logging:
 
