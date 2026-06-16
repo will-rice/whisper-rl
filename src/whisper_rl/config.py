@@ -23,9 +23,9 @@ class Config(BaseModel):
     # script-based loaders entirely).
     dataset_name: str = "fixie-ai/common_voice_17_0"
     # Common Voice locale configs to stream and interleave. ``None`` means
-    # "every locale in the dataset" (auto-discovered). The clip's language is
-    # auto-detected by Whisper at generation time; the locale is used only to
-    # bucket per-language metrics.
+    # "every locale in the dataset" (auto-discovered). The locale pins each
+    # clip's decoder language at generation time and buckets per-language
+    # metrics.
     languages: list[str] | None = None
     train_split: str = "train"
     eval_split: str = "validation"

@@ -9,8 +9,9 @@ from whisper_rl.config import Config
 def build_processor(config: Config) -> WhisperProcessor:
     """Load the (multilingual) Whisper processor for ``config.base_model``.
 
-    No language is fixed here: Whisper auto-detects each clip's language at
-    generation time so a single model can be trained across many languages.
+    The decoder language is pinned per clip from its Common Voice locale at
+    generation time (see :func:`decoder_prompt`), so one model trains across
+    many languages without relying on Whisper's language auto-detection.
 
     Args:
         config: Project configuration.
@@ -24,8 +25,8 @@ def build_processor(config: Config) -> WhisperProcessor:
 def build_policy(config: Config) -> WhisperForConditionalGeneration:
     """Load a trainable Whisper policy model.
 
-    Any checkpoint-baked ``forced_decoder_ids`` are cleared so Whisper's
-    per-clip language auto-detection is what conditions decoding.
+    Any checkpoint-baked ``forced_decoder_ids`` are cleared so the decoder
+    prompt we build (see :func:`decoder_prompt`) is what conditions decoding.
 
     Args:
         config: Project configuration.
@@ -58,28 +59,41 @@ def decoder_prompt(
     model: WhisperForConditionalGeneration,
     input_features: torch.Tensor,
     task: str,
+    locales: list[str],
 ) -> torch.Tensor:
-    """Reconstruct the decoder prompt that ``generate`` conditioned on.
+    """Build the Whisper decoder prompt, pinning each clip's known language.
 
-    Whisper forces ``[<|startoftranscript|>, <|lang|>, <|task|>,
-    <|notimestamps|>]`` before the transcription, but transformers >= 5 strips
-    it from the returned sequences. Language detection is a deterministic
-    argmax over the language logits, so re-running it reproduces exactly the
-    prompt used during generation.
+    Whisper conditions on ``[<|sot|>, <|lang|>, <|task|>, <|notimestamps|>]``.
+    Auto-detecting ``<|lang|>`` mislabels lower-resource clips (e.g. Urdu as
+    Hindi), so the clip transcribes in the wrong language and WER explodes.
+    Common Voice gives us the locale, so the language token is taken from it
+    (region stripped, e.g. ``sv-SE`` -> ``sv``); locales Whisper has no token
+    for fall back to its detected language. The same prompt is fed to
+    ``generate`` (as ``decoder_input_ids``) and to the log-prob forward, so the
+    two never disagree.
 
     Args:
-        model: The Whisper model that generated (or will generate) with
-            language auto-detection.
+        model: The Whisper model.
         input_features: Log-mel features of shape ``(batch, n_mels, frames)``.
         task: The Whisper task, e.g. ``"transcribe"``.
+        locales: Common Voice locale per clip, used to pin the language.
 
     Returns:
         Prompt token ids of shape ``(batch, 4)``.
     """
     generation_config = model.generation_config
-    with torch.no_grad():
-        lang_ids = model.detect_language(input_features=input_features)  # ty: ignore[invalid-argument-type]
-    lang = lang_ids.unsqueeze(1)
+    lang_to_id = generation_config.lang_to_id  # ty: ignore[unresolved-attribute]
+    tokens = [lang_to_id.get(f"<|{loc.split('-')[0]}|>") for loc in locales]
+
+    if any(token is None for token in tokens):
+        with torch.no_grad():
+            detected = model.detect_language(input_features=input_features)  # ty: ignore[invalid-argument-type]
+    else:
+        detected = torch.zeros(len(tokens), dtype=torch.long)
+    lang_ids = [
+        int(detected[i]) if token is None else token for i, token in enumerate(tokens)
+    ]
+    lang = torch.tensor(lang_ids, device=input_features.device).unsqueeze(1)
     start = torch.full_like(lang, generation_config.decoder_start_token_id)
     task_id = torch.full_like(lang, generation_config.task_to_id[task])  # ty: ignore[unresolved-attribute]
     no_timestamps = torch.full_like(

@@ -30,17 +30,41 @@ def test_generate_strips_decoder_prompt(
     assert (sequences != start).all()  # ty: ignore[unresolved-attribute]
 
 
-def test_decoder_prompt_matches_whisper_forced_tokens(
+def test_decoder_prompt_pins_known_locale(
     policy: WhisperForConditionalGeneration,
 ) -> None:
-    """The reconstructed prompt is the 4-token prefix generate() conditions on."""
+    """The prompt's language token comes from the known locale, not detection.
+
+    Whisper mis-detects the language of lower-resource clips (e.g. Urdu as
+    Hindi), so when Common Voice gives us the locale we must pin it. The clip's
+    features must not change the language token here.
+    """
     config = policy.generation_config
     features = torch.zeros(2, 80, 3000)
-    prompt = decoder_prompt(policy, features, task="transcribe")
+    prompt = decoder_prompt(policy, features, "transcribe", ["ur", "ka"])
 
     assert prompt.shape == (2, 4)
     assert (prompt[:, 0] == config.decoder_start_token_id).all()
-    lang_ids = set(config.lang_to_id.values())  # ty: ignore[unresolved-attribute]
-    assert all(int(token) in lang_ids for token in prompt[:, 1])
+    assert prompt[0, 1].item() == config.lang_to_id["<|ur|>"]  # ty: ignore[unresolved-attribute]
+    assert prompt[1, 1].item() == config.lang_to_id["<|ka|>"]  # ty: ignore[unresolved-attribute]
     assert (prompt[:, 2] == config.task_to_id["transcribe"]).all()  # ty: ignore[unresolved-attribute]
     assert (prompt[:, 3] == config.no_timestamps_token_id).all()  # ty: ignore[unresolved-attribute]
+
+
+def test_decoder_prompt_strips_locale_region(
+    policy: WhisperForConditionalGeneration,
+) -> None:
+    """Common Voice region-coded locales map to the base Whisper language."""
+    config = policy.generation_config
+    prompt = decoder_prompt(policy, torch.zeros(1, 80, 3000), "transcribe", ["sv-SE"])
+    assert prompt[0, 1].item() == config.lang_to_id["<|sv|>"]  # ty: ignore[unresolved-attribute]
+
+
+def test_decoder_prompt_falls_back_for_unsupported_locale(
+    policy: WhisperForConditionalGeneration,
+) -> None:
+    """Locales Whisper has no language token for fall back to detection."""
+    config = policy.generation_config
+    prompt = decoder_prompt(policy, torch.zeros(1, 80, 3000), "transcribe", ["ast"])
+    lang_ids = set(config.lang_to_id.values())  # ty: ignore[unresolved-attribute]
+    assert int(prompt[0, 1].item()) in lang_ids
