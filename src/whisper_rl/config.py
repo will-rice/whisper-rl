@@ -1,5 +1,7 @@
 """Configuration for Whisper GRPO finetuning."""
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -42,6 +44,11 @@ class Config(BaseModel):
     num_workers: int = 8
 
     # GRPO.
+    # Error rate the reward is computed from: ``"cer"`` (character, finer
+    # grained, keeps the reward off the floor on hard clips and works for
+    # languages without word spaces) or ``"wer"`` (word). Both are reported at
+    # validation regardless.
+    reward_metric: Literal["wer", "cer"] = "cer"
     # Number of completions sampled per audio clip (the "group").
     num_generations: int = 8
     max_new_tokens: int = 128

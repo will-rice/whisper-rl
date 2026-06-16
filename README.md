@@ -129,9 +129,16 @@ To train on a specific set of languages, set
 ### Metrics
 
 Logged during training: `train/loss`, `train/reward`, `train/kl`,
-`train/completion_len`. Validation reports corpus WER overall (`val/wer`) **and
-per language** (`val/wer_en`, `val/wer_de`, …), so you can see which languages
-improve or regress.
+`train/completion_len`. Validation reports corpus **WER and CER**, overall
+(`val/wer`, `val/cer`) **and per language** (`val/wer_en`, `val/cer_ja`, …), so
+you can see which languages improve or regress. CER is the meaningful figure
+for languages without word spaces (Japanese, Chinese, Thai), where word-level
+WER is inflated.
+
+The reward is the negated error rate of each sampled transcription. By default
+it uses **CER** (`reward_metric="cer"`): it is finer grained than WER, so even
+mostly-wrong completions earn graded reward instead of pinning at the floor —
+which keeps a learning signal alive on hard, low-resource clips.
 
 ## Development
 

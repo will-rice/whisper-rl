@@ -1,20 +1,28 @@
-"""Per-language word error rate aggregation.
+"""Per-language error rate aggregation.
 
-Accumulates references and hypotheses bucketed by language so corpus-level WER
-can be reported overall and broken down per language. Corpus WER (total edits
-over total reference words) is used rather than a mean of per-utterance WERs,
-which is the standard ASR reporting convention.
+Accumulates references and hypotheses bucketed by language so corpus-level
+error rates can be reported overall and broken down per language. Corpus rates
+(total edits over total reference units) are used rather than a mean of
+per-utterance rates, which is the standard ASR reporting convention. Both word
+error rate (WER) and character error rate (CER) are reported; CER is the
+meaningful figure for languages without word spaces.
 """
 
 from collections import defaultdict
+from collections.abc import Callable
 
 import jiwer
 
 from whisper_rl.rewards import normalize
 
+ERROR_RATES: dict[str, Callable[[list[str], list[str]], float]] = {
+    "wer": jiwer.wer,
+    "cer": jiwer.cer,
+}
 
-class LanguageWER:
-    """Bucket references/hypotheses by language and compute corpus WER."""
+
+class LanguageErrorRate:
+    """Bucket references/hypotheses by language and compute corpus WER and CER."""
 
     def __init__(self) -> None:
         self._references: dict[str, list[str]] = defaultdict(list)
@@ -37,8 +45,12 @@ class LanguageWER:
         self._hypotheses[language].append(hypothesis)
 
     @staticmethod
-    def _corpus_wer(references: list[str], hypotheses: list[str]) -> float:
-        """Corpus WER over normalized pairs, skipping empty references."""
+    def _corpus_rate(
+        references: list[str],
+        hypotheses: list[str],
+        rate: Callable[[list[str], list[str]], float],
+    ) -> float:
+        """Corpus error rate over normalized pairs, skipping empty references."""
         refs: list[str] = []
         hyps: list[str] = []
         for reference, hypothesis in zip(references, hypotheses, strict=True):
@@ -49,25 +61,27 @@ class LanguageWER:
             hyps.append(normalize(hypothesis))
         if not refs:
             return 0.0
-        return float(jiwer.wer(refs, hyps))
+        return float(rate(refs, hyps))
 
-    def compute(self) -> dict[str, float]:
-        """Compute per-language and overall corpus WER.
+    def compute(self) -> dict[str, dict[str, float]]:
+        """Compute per-language and overall corpus WER and CER.
 
         Returns:
-            A mapping from each seen language code to its corpus WER, plus an
-            ``"overall"`` key over all languages combined. Empty if nothing was
-            accumulated.
+            A mapping ``{"wer": {lang: rate, ..., "overall": rate}, "cer":
+            {...}}``. Empty if nothing was accumulated.
         """
-        results: dict[str, float] = {}
+        if not self._references:
+            return {}
+        results: dict[str, dict[str, float]] = {name: {} for name in ERROR_RATES}
         all_refs: list[str] = []
         all_hyps: list[str] = []
         for language in sorted(self._references):
             refs = self._references[language]
             hyps = self._hypotheses[language]
-            results[language] = self._corpus_wer(refs, hyps)
+            for name, rate in ERROR_RATES.items():
+                results[name][language] = self._corpus_rate(refs, hyps, rate)
             all_refs.extend(refs)
             all_hyps.extend(hyps)
-        if all_refs:
-            results["overall"] = self._corpus_wer(all_refs, all_hyps)
+        for name, rate in ERROR_RATES.items():
+            results[name]["overall"] = self._corpus_rate(all_refs, all_hyps, rate)
         return results
