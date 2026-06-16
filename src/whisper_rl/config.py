@@ -1,8 +1,6 @@
 """Configuration for Whisper GRPO finetuning."""
 
-from typing import Literal
-
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Config(BaseModel):
@@ -44,11 +42,20 @@ class Config(BaseModel):
     num_workers: int = 8
 
     # GRPO.
-    # Error rate the reward is computed from: ``"cer"`` (character, finer
-    # grained, keeps the reward off the floor on hard clips and works for
-    # languages without word spaces) or ``"wer"`` (word). Both are reported at
-    # validation regardless.
-    reward_metric: Literal["wer", "cer"] = "cer"
+    # Reward is the negated, weight-averaged blend of these penalty components
+    # (see ``whisper_rl.rewards.REWARD_COMPONENTS``): ``wer`` and ``cer`` are
+    # the error rates (CER is finer grained and works for languages without
+    # word spaces), ``length`` penalizes runaway-long completions, and
+    # ``repetition`` penalizes hallucination loops. A weight of 0 (or omission)
+    # drops a component. WER and CER are reported at validation regardless.
+    reward_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "wer": 1.0,
+            "cer": 1.0,
+            "length": 0.5,
+            "repetition": 0.5,
+        }
+    )
     # Number of completions sampled per audio clip (the "group").
     num_generations: int = 8
     max_new_tokens: int = 128
