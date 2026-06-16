@@ -11,6 +11,7 @@ dependencies = [
   "jiwer>=3.1.0",
   "librosa>=0.10.2",
   "lightning>=2.5.5",
+  "matplotlib>=3.11.0",
   "pre-commit>=4.1.0",
   "pydantic>=2.12.2",
   "pydocstyle>=6.3.0",
@@ -50,3 +51,4 @@ filterwarnings = ["ignore::DeprecationWarning"]
 
 [project.scripts]
 train = "whisper_rl.scripts.train:main"
+upload-card = "whisper_rl.scripts.upload_card:main"
