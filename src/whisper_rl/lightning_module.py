@@ -21,7 +21,7 @@ from whisper_rl.modeling import (
     decoder_prompt,
     repeat_features,
 )
-from whisper_rl.rewards import error_reward
+from whisper_rl.rewards import combined_reward
 
 
 class WhisperGRPOModule(LightningModule):
@@ -137,7 +137,7 @@ class WhisperGRPOModule(LightningModule):
 
         rewards = torch.tensor(
             [
-                error_reward(ref, hyp, self.config.reward_metric)
+                combined_reward(ref, hyp, self.config.reward_weights)
                 for ref, hyp in zip(references, hypotheses, strict=True)
             ],
             device=self.device,

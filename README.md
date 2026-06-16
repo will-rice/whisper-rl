@@ -135,10 +135,19 @@ you can see which languages improve or regress. CER is the meaningful figure
 for languages without word spaces (Japanese, Chinese, Thai), where word-level
 WER is inflated.
 
-The reward is the negated error rate of each sampled transcription. By default
-it uses **CER** (`reward_metric="cer"`): it is finer grained than WER, so even
-mostly-wrong completions earn graded reward instead of pinning at the floor —
-which keeps a learning signal alive on hard, low-resource clips.
+The reward is the negated, weight-averaged blend of several penalty components,
+configured by `reward_weights` (default `{wer: 1.0, cer: 1.0, length: 0.5,
+repetition: 0.5}`):
+
+- **`wer`** / **`cer`** — word / character error rate; CER is finer grained, so
+  even mostly-wrong completions earn graded reward instead of pinning at the
+  floor, keeping a learning signal alive on hard, low-resource clips.
+- **`length`** — penalizes completions longer than the reference, countering
+  the runaway-insertion drift that inflates WER.
+- **`repetition`** — penalizes repeated word bigrams (hallucination loops).
+
+Set a component's weight to 0 to drop it. Group-relative advantages normalize
+the overall scale, so weights set only the relative emphasis between terms.
 
 ## Development
 
