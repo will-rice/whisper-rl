@@ -13,7 +13,7 @@ from whisper_rl.grpo import (
     grpo_loss,
     sequence_log_probs,
 )
-from whisper_rl.metrics import LanguageWER
+from whisper_rl.metrics import LanguageErrorRate
 from whisper_rl.modeling import (
     build_policy,
     build_processor,
@@ -21,7 +21,7 @@ from whisper_rl.modeling import (
     decoder_prompt,
     repeat_features,
 )
-from whisper_rl.rewards import wer_reward
+from whisper_rl.rewards import error_reward
 
 
 class WhisperGRPOModule(LightningModule):
@@ -47,7 +47,7 @@ class WhisperGRPOModule(LightningModule):
         self.reference = build_reference(config)
         eos = self.policy.config.eos_token_id
         self.eos_token_id = int(eos)  # ty: ignore[invalid-argument-type]
-        self.val_metric = LanguageWER()
+        self.val_metric = LanguageErrorRate()
 
     def _generate(
         self, input_features: torch.Tensor, prompt: torch.Tensor, sample: bool
@@ -137,7 +137,7 @@ class WhisperGRPOModule(LightningModule):
 
         rewards = torch.tensor(
             [
-                wer_reward(ref, hyp)
+                error_reward(ref, hyp, self.config.reward_metric)
                 for ref, hyp in zip(references, hypotheses, strict=True)
             ],
             device=self.device,
@@ -201,11 +201,17 @@ class WhisperGRPOModule(LightningModule):
             self.val_metric.update(language, reference, hypothesis)
 
     def on_validation_epoch_end(self) -> None:
-        """Log overall and per-language word error rates."""
+        """Log overall and per-language word and character error rates."""
         results = self.val_metric.compute()
-        for language, wer in results.items():
-            name = "val/wer" if language == "overall" else f"val/wer_{language}"
-            self.log(name, wer, prog_bar=language == "overall", sync_dist=True)
+        for metric, per_language in results.items():
+            for language, rate in per_language.items():
+                name = (
+                    f"val/{metric}"
+                    if language == "overall"
+                    else f"val/{metric}_{language}"
+                )
+                prog_bar = metric == "wer" and language == "overall"
+                self.log(name, rate, prog_bar=prog_bar, sync_dist=True)
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         """Configure the AdamW optimizer and a warmup + cosine schedule."""
