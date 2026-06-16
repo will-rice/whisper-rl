@@ -73,7 +73,7 @@ def main() -> None:
         repo_id=args.repo_id,
         repo_type="model",
     )
-    logging.info("Uploaded card and curves to %s (best val/wer=%s)", args.repo_id, best_wer)
+    logging.info("Uploaded card to %s (best val/wer=%s)", args.repo_id, best_wer)
 
 
 def fetch_series(run: wandb.apis.public.Run) -> dict[str, tuple[list, list]]:
@@ -147,6 +147,8 @@ def build_card(
     config = run.config
     languages = config.get("languages") or ["en"]
     dataset = config.get("dataset_name", "fixie-ai/common_voice_17_0")
+    base_model = config.get("base_model", "openai/whisper-tiny")
+    base_url = f"https://huggingface.co/{base_model}"
 
     metric_yaml = ""
     if best_wer is not None:
@@ -164,28 +166,24 @@ def build_card(
             "    - type: wer\n"
             f"      value: {best_wer:.4f}\n"
             "      name: Validation WER\n"
-    )
+        )
 
     yaml = (
         "---\n"
         "library_name: transformers\n"
         f"license: {license_id}\n"
         "pipeline_tag: automatic-speech-recognition\n"
-        f"base_model: {config.get('base_model', 'openai/whisper-tiny')}\n"
+        f"base_model: {base_model}\n"
         "datasets:\n"
         f"- {dataset}\n"
         "language:\n"
         + "".join(f"- {code}\n" for code in languages)
         + "tags:\n- whisper\n- grpo\n- reinforcement-learning\n- asr\n"
-        "metrics:\n- wer\n"
-        + metric_yaml
-        + "---\n"
+        "metrics:\n- wer\n" + metric_yaml + "---\n"
     )
 
     hp_rows = "\n".join(
-        f"| {name} | `{config[key]}` |"
-        for key, name in HYPERPARAMS
-        if key in config
+        f"| {name} | `{config[key]}` |" for key, name in HYPERPARAMS if key in config
     )
     result_line = (
         f"**Best validation WER: {best_wer:.3f}**\n" if best_wer is not None else ""
@@ -194,9 +192,8 @@ def build_card(
     return f"""{yaml}
 # {repo_id.split("/")[-1]}
 
-A [Whisper]({"https://huggingface.co/" + config.get("base_model", "openai/whisper-tiny")})
-model fine-tuned with **GRPO** (Group Relative Policy Optimization) using **word
-error rate (WER)** as the reward. Trained with
+A [Whisper]({base_url}) model fine-tuned with **GRPO** (Group Relative Policy
+Optimization) using **word error rate (WER)** as the reward. Trained with
 [whisper-rl](https://github.com/will-rice/whisper-rl).
 
 {result_line}
