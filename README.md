@@ -14,9 +14,10 @@ policy-gradient objective regularized by a KL penalty to the original model.
 For each audio clip in a batch:
 
 1. **Sample a group.** Draw `num_generations` transcriptions from the current
-   policy with temperature sampling. Whisper auto-detects each clip's language
-   and prepends its fixed 4-token decoder prompt
-   (`<|sot|><|lang|><|transcribe|><|notimestamps|>`); GRPO scores only the
+   policy with temperature sampling. The clip's language is pinned from its
+   Common Voice locale into the fixed 4-token decoder prompt
+   (`<|sot|><|lang|><|transcribe|><|notimestamps|>`) — Whisper's own
+   auto-detection mislabels lower-resource clips. GRPO scores only the
    transcription tokens that follow.
 2. **Score.** Reward each completion with `-WER` (post text-normalization)
    against the reference transcript. Lower error → higher reward.
@@ -78,8 +79,8 @@ By default `train` streams **every Common Voice 17 locale** (auto-discovered
 and interleaved) and finetunes `openai/whisper-tiny`. Training audio is
 decoded and featurized on the fly in the dataloader workers, so the full
 splits train with flat memory; the eval slice is materialized once so every
-validation scores the exact same clips. The language of each clip is
-auto-detected by Whisper:
+validation scores the exact same clips. Each clip's language is pinned from its
+Common Voice locale:
 
 ```bash
 uv run train

@@ -36,8 +36,8 @@ class Batch(NamedTuple):
     Attributes:
         input_features: Log-mel features of shape ``(batch, n_mels, frames)``.
         references: Ground-truth transcriptions, one per audio clip.
-        languages: Common Voice locale for each clip, used to bucket
-            per-language metrics (the decoder language is auto-detected).
+        languages: Common Voice locale for each clip; pins the decoder
+            language and buckets per-language metrics.
     """
 
     input_features: torch.Tensor

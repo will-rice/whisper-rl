@@ -28,11 +28,12 @@ class WhisperGRPOModule(LightningModule):
     """Finetune Whisper with Group Relative Policy Optimization on WER.
 
     For each audio clip a group of completions is sampled from the current
-    policy (conditioned on the clip's known language), scored by negated WER
-    against the reference transcript, and turned into group-relative
-    advantages. The policy is updated with a clipped policy-gradient objective
-    regularized by a KL penalty toward a frozen copy of the initial model.
-    Validation reports word error rate overall and broken down per language.
+    policy, conditioned on the clip's known language (pinned from its Common
+    Voice locale), scored by negated WER against the reference transcript, and
+    turned into group-relative advantages. The policy is updated with a clipped
+    policy-gradient objective regularized by a KL penalty toward a frozen copy
+    of the initial model. Validation reports word error rate overall and broken
+    down per language.
     """
 
     def __init__(
@@ -48,16 +49,20 @@ class WhisperGRPOModule(LightningModule):
         self.eos_token_id = int(eos)  # ty: ignore[invalid-argument-type]
         self.val_metric = LanguageWER()
 
-    def _generate(self, input_features: torch.Tensor, sample: bool) -> torch.Tensor:
-        """Generate transcriptions, auto-detecting each clip's language.
+    def _generate(
+        self, input_features: torch.Tensor, prompt: torch.Tensor, sample: bool
+    ) -> torch.Tensor:
+        """Generate transcriptions conditioned on a fixed decoder ``prompt``.
 
-        Whisper detects the language and conditions on a 4-token decoder
-        prompt (``<|sot|><|lang|><|transcribe|><|notimestamps|>``), but
-        transformers strips it from the output, so the returned ids are the
-        transcription tokens only.
+        The prompt pins each clip's known language (see
+        :func:`whisper_rl.modeling.decoder_prompt`); passing it as
+        ``decoder_input_ids`` forces that language instead of letting Whisper
+        auto-detect (which mislabels lower-resource clips). transformers strips
+        the prompt from the output, so the returned ids are completion tokens.
 
         Args:
             input_features: Features of shape ``(batch, n_mels, frames)``.
+            prompt: Decoder prompt ids of shape ``(batch, prompt_len)``.
             sample: Whether to sample (training rollouts) or decode greedily
                 (validation).
 
@@ -68,7 +73,7 @@ class WhisperGRPOModule(LightningModule):
             if sample:
                 sequences = self.policy.generate(  # ty: ignore[missing-argument]
                     input_features=input_features,
-                    task=self.config.task,
+                    decoder_input_ids=prompt,
                     max_new_tokens=self.config.max_new_tokens,
                     do_sample=True,
                     temperature=self.config.temperature,
@@ -79,7 +84,7 @@ class WhisperGRPOModule(LightningModule):
             else:
                 sequences = self.policy.generate(  # ty: ignore[missing-argument]
                     input_features=input_features,
-                    task=self.config.task,
+                    decoder_input_ids=prompt,
                     max_new_tokens=self.config.max_new_tokens,
                     do_sample=False,
                     num_beams=1,
@@ -120,7 +125,12 @@ class WhisperGRPOModule(LightningModule):
         features = repeat_features(batch.input_features, num_gen)
         references = [ref for ref in batch.references for _ in range(num_gen)]
 
-        completion_ids = self._generate(features, sample=True)
+        # Pin each clip's known language, then repeat to match the sampled group.
+        prompt = decoder_prompt(
+            self.policy, batch.input_features, self.config.task, batch.languages
+        )
+        prompt = prompt.repeat_interleave(num_gen, dim=0)
+        completion_ids = self._generate(features, prompt, sample=True)
         hypotheses = self.processor.batch_decode(
             completion_ids, skip_special_tokens=True
         )
@@ -135,9 +145,6 @@ class WhisperGRPOModule(LightningModule):
         )
         advantages = group_advantages(rewards, num_gen, self.config.advantage_eps)
 
-        # Detect once per clip, then repeat to match the sampled group.
-        prompt = decoder_prompt(self.policy, batch.input_features, self.config.task)
-        prompt = prompt.repeat_interleave(num_gen, dim=0)
         policy_log_probs = self._completion_log_probs(
             self.policy, features, prompt, completion_ids
         )
@@ -181,7 +188,10 @@ class WhisperGRPOModule(LightningModule):
 
     def validation_step(self, batch: Batch, batch_idx: int) -> None:
         """Greedy-decode the batch and accumulate per-language WER."""
-        completion_ids = self._generate(batch.input_features, sample=False)
+        prompt = decoder_prompt(
+            self.policy, batch.input_features, self.config.task, batch.languages
+        )
+        completion_ids = self._generate(batch.input_features, prompt, sample=False)
         hypotheses = self.processor.batch_decode(
             completion_ids, skip_special_tokens=True
         )
