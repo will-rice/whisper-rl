@@ -183,11 +183,12 @@ class WhisperGRPOModule(LightningModule):
         return self
 
     def on_validation_epoch_start(self) -> None:
-        """Reset the per-language WER accumulator."""
+        """Reset the per-language metric and the validation-reward accumulator."""
         self.val_metric.reset()
+        self.val_rewards: list[float] = []
 
     def validation_step(self, batch: Batch, batch_idx: int) -> None:
-        """Greedy-decode the batch and accumulate per-language WER."""
+        """Greedy-decode the batch and accumulate per-language rates and reward."""
         prompt = decoder_prompt(
             self.policy, batch.input_features, self.config.task, batch.languages
         )
@@ -199,9 +200,20 @@ class WhisperGRPOModule(LightningModule):
             batch.languages, batch.references, hypotheses, strict=True
         ):
             self.val_metric.update(language, reference, hypothesis)
+            self.val_rewards.append(
+                combined_reward(reference, hypothesis, self.config.reward_weights)
+            )
 
     def on_validation_epoch_end(self) -> None:
-        """Log overall and per-language word and character error rates."""
+        """Log the validation reward and per-language word/character error rates.
+
+        ``val/reward`` is the greedy-decoded blend the policy is trained to
+        maximize, so checkpointing on it (``mode="max"``) keeps the model that
+        is best on the full objective, not just on WER.
+        """
+        if self.val_rewards:
+            reward = sum(self.val_rewards) / len(self.val_rewards)
+            self.log("val/reward", reward, prog_bar=True, sync_dist=True)
         results = self.val_metric.compute()
         for metric, per_language in results.items():
             for language, rate in per_language.items():
@@ -210,8 +222,7 @@ class WhisperGRPOModule(LightningModule):
                     if language == "overall"
                     else f"val/{metric}_{language}"
                 )
-                prog_bar = metric == "wer" and language == "overall"
-                self.log(name, rate, prog_bar=prog_bar, sync_dist=True)
+                self.log(name, rate, sync_dist=True)
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         """Configure the AdamW optimizer and a warmup + cosine schedule."""

@@ -63,8 +63,8 @@ def main() -> None:
     )
     checkpoint = ModelCheckpoint(
         dirpath=str(experiment_path),
-        monitor="val/wer",
-        mode="min",
+        monitor="val/reward",
+        mode="max",
         save_top_k=1,
         filename="{step}-{val/wer:.3f}",
         auto_insert_metric_name=False,
@@ -91,7 +91,7 @@ def main() -> None:
 
 
 class PushBestToHub(Callback):
-    """Push the policy to the Hugging Face Hub whenever validation WER improves.
+    """Push the policy to the Hugging Face Hub whenever validation reward improves.
 
     The live module already holds the weights that ModelCheckpoint is about to
     save as the new best, so they are uploaded directly — in standard
@@ -103,22 +103,22 @@ class PushBestToHub(Callback):
     def __init__(self, repo_name: str, processor: WhisperProcessor) -> None:
         self.repo_name = repo_name
         self.processor = processor
-        self.best_wer = float("inf")
+        self.best_reward = float("-inf")
 
     def on_validation_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        """Upload the policy and processor after a new best validation WER."""
+        """Upload the policy and processor after a new best validation reward."""
         if trainer.sanity_checking or not trainer.is_global_zero:
             return
-        wer = trainer.callback_metrics.get("val/wer")
-        if wer is None or float(wer) >= self.best_wer:
+        reward = trainer.callback_metrics.get("val/reward")
+        if reward is None or float(reward) <= self.best_reward:
             return
-        self.best_wer = float(wer)
+        self.best_reward = float(reward)
         assert isinstance(pl_module, WhisperGRPOModule)
         pl_module.policy.push_to_hub(self.repo_name)  # ty: ignore[invalid-argument-type]
         self.processor.push_to_hub(self.repo_name)
         logging.info(
-            "Pushed new best (val/wer=%.4f) to the Hub as %s",
-            self.best_wer,
+            "Pushed new best (val/reward=%.4f) to the Hub as %s",
+            self.best_reward,
             self.repo_name,
         )
 
