@@ -43,7 +43,9 @@ HYPERPARAMS = [
 ]
 
 
-def write_card(repo_id: str, run: wandb.apis.public.Run, license_id: str = "mit") -> None:
+def write_card(
+    repo_id: str, run: wandb.apis.public.Run, license_id: str = "mit"
+) -> None:
     """Render and upload the card and training-curve image for ``run``.
 
     Args:
