@@ -22,6 +22,25 @@ from whisper_rl.datasets import SpeechDataModule
 from whisper_rl.lightning_module import WhisperGRPOModule
 from whisper_rl.modeling import build_processor
 
+# Hugging Face repo ids are capped at 96 characters.
+MAX_REPO_NAME_LEN = 96
+
+
+def hub_repo_name(name: str) -> str:
+    """Truncate an experiment name to a valid Hugging Face repo id.
+
+    Warm-starting from a Hub model whose name is itself a long experiment name
+    compounds, so cap the length and strip any trailing separator left by the
+    cut.
+
+    Args:
+        name: The proposed experiment / repo name.
+
+    Returns:
+        A name no longer than 96 characters that is a valid Hub repo id.
+    """
+    return name[:MAX_REPO_NAME_LEN].rstrip("-.")
+
 
 def main() -> None:
     """Entry point for the ``train`` console script."""
@@ -49,6 +68,7 @@ def main() -> None:
     experiment_name = f"{model_name}-grpo-{git_hash}"
     if args.run_suffix:
         experiment_name = f"{experiment_name}-{args.run_suffix}"
+    experiment_name = hub_repo_name(experiment_name)
     experiment_path = args.log_root / experiment_name
     experiment_path.mkdir(exist_ok=True, parents=True)
 
@@ -116,28 +136,25 @@ class PushBestToHub(Callback):
             return
         self.best_reward = float(reward)
         assert isinstance(pl_module, WhisperGRPOModule)
-        pl_module.policy.push_to_hub(self.repo_name)  # ty: ignore[invalid-argument-type]
-        self.processor.push_to_hub(self.repo_name)
-        logging.info(
-            "Pushed new best (val/reward=%.4f) to the Hub as %s",
-            self.best_reward,
-            self.repo_name,
-        )
-        self._update_card(trainer)
+        # Never let a Hub/W&B failure crash a long training run.
+        try:
+            pl_module.policy.push_to_hub(self.repo_name)  # ty: ignore[invalid-argument-type]
+            self.processor.push_to_hub(self.repo_name)
+            self._update_card(trainer)
+            logging.info(
+                "Pushed new best (val/reward=%.4f) to the Hub as %s",
+                self.best_reward,
+                self.repo_name,
+            )
+        except Exception as error:  # pragma: no cover - network/Hub issues
+            logging.warning("Skipped Hub push of new best: %s", error)
 
     def _update_card(self, trainer: Trainer) -> None:
-        """Regenerate the model card from the live W&B run, if one exists.
-
-        Wrapped so a transient W&B or Hub failure logs a warning rather than
-        crashing a long training run.
-        """
+        """Regenerate the model card from the live W&B run, if one exists."""
         if not isinstance(trainer.logger, WandbLogger):
             return
         run_path = "/".join(trainer.logger.experiment.path)
-        try:
-            write_card(self.repo_name, wandb.Api().run(run_path))
-        except Exception as error:  # pragma: no cover - network/W&B issues
-            logging.warning("Skipped model-card update: %s", error)
+        write_card(self.repo_name, wandb.Api().run(run_path))
 
 
 if __name__ == "__main__":
