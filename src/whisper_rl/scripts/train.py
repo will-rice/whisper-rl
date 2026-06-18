@@ -4,6 +4,7 @@ import logging
 from argparse import ArgumentParser
 from pathlib import Path
 
+import wandb
 from dotenv import load_dotenv
 from git import Repo
 from lightning import LightningModule, Trainer, seed_everything
@@ -15,6 +16,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import WandbLogger
 from transformers import WhisperProcessor
 
+from whisper_rl.cards import write_card
 from whisper_rl.config import Config
 from whisper_rl.datasets import SpeechDataModule
 from whisper_rl.lightning_module import WhisperGRPOModule
@@ -121,6 +123,21 @@ class PushBestToHub(Callback):
             self.best_reward,
             self.repo_name,
         )
+        self._update_card(trainer)
+
+    def _update_card(self, trainer: Trainer) -> None:
+        """Regenerate the model card from the live W&B run, if one exists.
+
+        Wrapped so a transient W&B or Hub failure logs a warning rather than
+        crashing a long training run.
+        """
+        if not isinstance(trainer.logger, WandbLogger):
+            return
+        run_path = "/".join(trainer.logger.experiment.path)
+        try:
+            write_card(self.repo_name, wandb.Api().run(run_path))
+        except Exception as error:  # pragma: no cover - network/W&B issues
+            logging.warning("Skipped model-card update: %s", error)
 
 
 if __name__ == "__main__":
