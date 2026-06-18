@@ -82,14 +82,13 @@ def fetch_validation_rows(run: wandb.apis.public.Run) -> list[dict]:
         each including ``val/reward`` when logged and every per-language
         ``val/wer_<lang>`` / ``val/cer_<lang>``.
     """
-    lang_keys = sorted(
-        key for key in run.summary.keys() if key.startswith(("val/wer_", "val/cer_"))
-    )
-    base = ["val/wer", "val/cer", STEP_KEY, *lang_keys]
-    rows = list(run.scan_history(keys=["val/reward", *base]))
-    if not rows:  # runs logged before val/reward existed
-        rows = list(run.scan_history(keys=base))
-    return rows
+    # scan_history inner-joins on the requested keys, so only request metrics
+    # the run actually logged — older runs predate val/cer and val/reward.
+    summary = set(run.summary.keys())
+    keys = [STEP_KEY, "val/wer"]
+    keys += [opt for opt in ("val/cer", "val/reward") if opt in summary]
+    keys += sorted(key for key in summary if key.startswith(("val/wer_", "val/cer_")))
+    return list(run.scan_history(keys=keys))
 
 
 def select_best(rows: list[dict]) -> dict | None:

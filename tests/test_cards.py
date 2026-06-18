@@ -1,6 +1,37 @@
 """Tests for model-card metric selection and per-language formatting."""
 
-from whisper_rl.cards import model_index, select_best
+from whisper_rl.cards import fetch_validation_rows, model_index, select_best
+
+
+class _StubRun:
+    """Minimal stand-in for a W&B run exposing summary keys and history."""
+
+    def __init__(self, summary_keys: list[str]) -> None:
+        self.summary = dict.fromkeys(summary_keys, 0.0)
+        self.requested: list[str] | None = None
+
+    def scan_history(self, keys: list[str]) -> list[dict]:
+        self.requested = keys
+        return [dict.fromkeys(keys, 0.1)]
+
+
+def test_fetch_validation_rows_skips_unlogged_optional_metrics() -> None:
+    """Old runs without val/cer or val/reward are not excluded by the scan."""
+    run = _StubRun(["val/wer", "val/wer_en", "train/loss"])
+    fetch_validation_rows(run)  # ty: ignore[invalid-argument-type]
+    assert run.requested is not None
+    assert "val/cer" not in run.requested
+    assert "val/reward" not in run.requested
+    assert "val/wer" in run.requested
+    assert "val/wer_en" in run.requested
+
+
+def test_fetch_validation_rows_includes_logged_optional_metrics() -> None:
+    """Newer runs request val/cer and val/reward when present."""
+    run = _StubRun(["val/wer", "val/cer", "val/reward", "val/wer_de", "val/cer_de"])
+    fetch_validation_rows(run)  # ty: ignore[invalid-argument-type]
+    assert run.requested is not None
+    assert {"val/cer", "val/reward", "val/wer_de", "val/cer_de"} <= set(run.requested)
 
 
 def test_select_best_prefers_max_reward() -> None:
