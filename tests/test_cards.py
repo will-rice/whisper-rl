@@ -1,6 +1,11 @@
 """Tests for model-card metric selection and per-language formatting."""
 
-from whisper_rl.cards import fetch_validation_rows, model_index, select_best
+from whisper_rl.cards import (
+    fetch_validation_rows,
+    language_table,
+    model_index,
+    select_best,
+)
 
 
 class _StubRun:
@@ -82,3 +87,17 @@ def test_model_index_empty_without_validation() -> None:
     """No validation row yields no model-index block."""
     assert model_index("model", {}, "ds") == ""
     assert model_index("model", {"train/loss": 0.1}, "ds") == ""
+
+
+def test_language_table_lists_sorted_per_language_rates() -> None:
+    """The markdown table renders one sorted row per language with WER and CER."""
+    row = {"val/wer_en": 0.1, "val/cer_en": 0.05, "val/wer_de": 0.2, "val/cer_de": 0.08}
+    lines = language_table(row).splitlines()
+    assert lines[0] == "| Language | WER | CER |"
+    assert lines[2] == "| `de` | 0.200 | 0.080 |"
+    assert lines[3] == "| `en` | 0.100 | 0.050 |"
+
+
+def test_language_table_empty_without_per_language_keys() -> None:
+    """A row with no per-language keys produces no table."""
+    assert language_table({"val/wer": 0.4}) == ""
