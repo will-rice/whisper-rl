@@ -53,22 +53,88 @@ def write_card(
         run: The W&B run to read config and metric history from.
         license_id: SPDX license identifier for the card metadata.
     """
-    series = fetch_series(run)
-    best_wer = min(series["val/wer"][1]) if "val/wer" in series else None
+    best = select_best(fetch_validation_rows(run))
     api = HfApi()
     api.upload_file(
-        path_or_fileobj=render_curves(series),
+        path_or_fileobj=render_curves(fetch_series(run)),
         path_in_repo="training_curves.png",
         repo_id=repo_id,
         repo_type="model",
     )
     api.upload_file(
-        path_or_fileobj=build_card(repo_id, run, best_wer, license_id).encode(),
+        path_or_fileobj=build_card(repo_id, run, best, license_id).encode(),
         path_in_repo="README.md",
         repo_id=repo_id,
         repo_type="model",
     )
-    logging.info("Uploaded card to %s (best val/wer=%s)", repo_id, best_wer)
+    best_wer = best.get("val/wer") if best else None
+    logging.info("Uploaded card to %s (overall val/wer=%s)", repo_id, best_wer)
+
+
+def fetch_validation_rows(run: wandb.apis.public.Run) -> list[dict]:
+    """Return each validation row with its overall and per-language rates.
+
+    Args:
+        run: The W&B run to read.
+
+    Returns:
+        A list of history rows that carry ``val/wer`` (i.e. validation epochs),
+        each including ``val/reward`` when logged and every per-language
+        ``val/wer_<lang>`` / ``val/cer_<lang>``.
+    """
+    lang_keys = sorted(
+        key for key in run.summary.keys() if key.startswith(("val/wer_", "val/cer_"))
+    )
+    base = ["val/wer", "val/cer", STEP_KEY, *lang_keys]
+    rows = list(run.scan_history(keys=["val/reward", *base]))
+    if not rows:  # runs logged before val/reward existed
+        rows = list(run.scan_history(keys=base))
+    return rows
+
+
+def select_best(rows: list[dict]) -> dict | None:
+    """Pick the validation row matching the kept checkpoint.
+
+    The checkpoint is selected on the maximum ``val/reward``; for older runs
+    that never logged it, fall back to the minimum ``val/wer``.
+
+    Args:
+        rows: Validation history rows.
+
+    Returns:
+        The chosen row, or ``None`` if there are no validation rows.
+    """
+    val_rows = [row for row in rows if row.get("val/wer") is not None]
+    if not val_rows:
+        return None
+    with_reward = [row for row in val_rows if row.get("val/reward") is not None]
+    if with_reward:
+        return max(with_reward, key=lambda row: row["val/reward"])
+    return min(val_rows, key=lambda row: row["val/wer"])
+
+
+def language_table(row: dict) -> str:
+    """Render a per-language WER/CER markdown table from a validation row.
+
+    Args:
+        row: A validation row with ``val/wer_<lang>`` / ``val/cer_<lang>`` keys.
+
+    Returns:
+        A markdown table, or ``""`` when the row has no per-language keys.
+    """
+    langs = sorted(
+        key.removeprefix("val/wer_") for key in row if key.startswith("val/wer_")
+    )
+    if not langs:
+        return ""
+    lines = ["| Language | WER | CER |", "| --- | --- | --- |"]
+    for lang in langs:
+        wer = row.get(f"val/wer_{lang}")
+        cer = row.get(f"val/cer_{lang}")
+        wer_s = f"{wer:.3f}" if wer is not None else "—"
+        cer_s = f"{cer:.3f}" if cer is not None else "—"
+        lines.append(f"| `{lang}` | {wer_s} | {cer_s} |")
+    return "\n".join(lines)
 
 
 def fetch_series(run: wandb.apis.public.Run) -> dict[str, tuple[list, list]]:
@@ -125,7 +191,7 @@ def render_curves(series: dict[str, tuple[list, list]]) -> bytes:
 def build_card(
     repo_id: str,
     run: wandb.apis.public.Run,
-    best_wer: float | None,
+    best: dict | None,
     license_id: str,
 ) -> str:
     """Compose the model card markdown (YAML metadata + body).
@@ -133,7 +199,8 @@ def build_card(
     Args:
         repo_id: Target HF model repo id.
         run: The W&B run (source of config and links).
-        best_wer: Best validation WER, or ``None`` if never logged.
+        best: The best validation row (overall + per-language rates), or
+            ``None`` if the run never validated.
         license_id: SPDX license identifier for the metadata.
 
     Returns:
@@ -145,8 +212,15 @@ def build_card(
     base_model = config.get("base_model", "openai/whisper-tiny")
     base_url = f"https://huggingface.co/{base_model}"
 
+    best = best or {}
+    overall_wer = best.get("val/wer")
+    overall_cer = best.get("val/cer")
+    table = language_table(best)
+    n_langs = sum(1 for key in best if key.startswith("val/wer_"))
+    scope = f"overall across {n_langs} languages" if n_langs > 1 else "overall"
+
     metric_yaml = ""
-    if best_wer is not None:
+    if overall_wer is not None:
         metric_yaml = (
             "model-index:\n"
             f"- name: {repo_id.split('/')[-1]}\n"
@@ -159,8 +233,8 @@ def build_card(
             "      name: Common Voice 17.0\n"
             "    metrics:\n"
             "    - type: wer\n"
-            f"      value: {best_wer:.4f}\n"
-            "      name: Validation WER\n"
+            f"      value: {overall_wer:.4f}\n"
+            f"      name: Validation WER ({scope})\n"
         )
 
     yaml = (
@@ -180,8 +254,18 @@ def build_card(
     hp_rows = "\n".join(
         f"| {name} | `{config[key]}` |" for key, name in HYPERPARAMS if key in config
     )
-    result_line = (
-        f"**Best validation WER: {best_wer:.3f}**\n" if best_wer is not None else ""
+    if overall_wer is not None:
+        cer_part = f", CER {overall_cer:.3f}" if overall_cer is not None else ""
+        result_line = (
+            f"**Best validation ({scope}): WER {overall_wer:.3f}{cer_part}**\n"
+        )
+    else:
+        result_line = ""
+    language_section = (
+        f"\n## Per-language results\n\nValidation WER and CER at the best "
+        f"checkpoint, per Common Voice locale:\n\n{table}\n"
+        if table
+        else ""
     )
 
     return f"""{yaml}
@@ -191,7 +275,7 @@ A [Whisper]({base_url}) model fine-tuned with **GRPO** (Group Relative Policy
 Optimization) using a **blended error-rate reward**. Trained with
 [whisper-rl](https://github.com/will-rice/whisper-rl).
 
-{result_line}
+{result_line}{language_section}
 ## How it was trained
 
 Instead of cross-entropy against a single reference, for each audio clip the
