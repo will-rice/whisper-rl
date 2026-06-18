@@ -24,9 +24,10 @@ STEP_KEY = "trainer/global_step"
 
 # (metric key, axis label) for each curve to plot, in display order.
 CURVES = [
+    ("val/reward", "Validation reward (higher is better)"),
     ("val/wer", "Validation WER (lower is better)"),
     ("val/cer", "Validation CER (lower is better)"),
-    ("train/reward", "Train reward (negated error rate on rollouts)"),
+    ("train/reward", "Train reward (blended, on rollouts)"),
     ("train/kl", "Train KL to reference"),
 ]
 
