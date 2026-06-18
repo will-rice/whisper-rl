@@ -166,6 +166,31 @@ def model_index(repo_name: str, row: dict, dataset: str) -> str:
     return f"model-index:\n- name: {repo_name}\n  results:\n{results}"
 
 
+def language_table(row: dict) -> str:
+    """Render a human-readable per-language WER/CER markdown table.
+
+    Args:
+        row: A validation row with ``val/wer_<lang>`` / ``val/cer_<lang>`` keys.
+
+    Returns:
+        A markdown table sorted by language, or ``""`` when the row has no
+        per-language keys.
+    """
+    langs = sorted(
+        key.removeprefix("val/wer_") for key in row if key.startswith("val/wer_")
+    )
+    if not langs:
+        return ""
+    lines = ["| Language | WER | CER |", "| --- | --- | --- |"]
+    for lang in langs:
+        wer = row.get(f"val/wer_{lang}")
+        cer = row.get(f"val/cer_{lang}")
+        wer_s = f"{wer:.3f}" if wer is not None else "—"
+        cer_s = f"{cer:.3f}" if cer is not None else "—"
+        lines.append(f"| `{lang}` | {wer_s} | {cer_s} |")
+    return "\n".join(lines)
+
+
 def fetch_series(run: wandb.apis.public.Run) -> dict[str, tuple[list, list]]:
     """Return ``{metric: (steps, values)}`` from the run's full history.
 
@@ -247,6 +272,18 @@ def build_card(
     n_langs = sum(1 for key in best if key.startswith("val/wer_"))
     scope = f"overall across {n_langs} languages" if n_langs > 1 else "overall"
 
+    configured = config.get("languages")
+    if configured:
+        lang_scope = ", ".join(f"`{code}`" for code in configured)
+    elif n_langs:
+        lang_scope = f"all {n_langs} Common Voice locales"
+    else:
+        lang_scope = "all available Common Voice locales"
+    sample_cap = config.get("max_train_samples")
+    sample_scope = (
+        f"a {sample_cap}-clip slice" if sample_cap else "the full training split"
+    )
+
     yaml = (
         "---\n"
         "library_name: transformers\n"
@@ -269,11 +306,18 @@ def build_card(
     if overall_wer is not None:
         cer_part = f", CER {overall_cer:.3f}" if overall_cer is not None else ""
         result_line = (
-            f"**Best validation ({scope}): WER {overall_wer:.3f}{cer_part}** — "
-            "see per-language WER/CER in the Evaluation Results above.\n"
+            f"**Best validation ({scope}): WER {overall_wer:.3f}{cer_part}**\n"
         )
     else:
         result_line = ""
+    table = language_table(best)
+    performance_section = (
+        f"\n## Performance per language\n\nValidation WER and CER at the best "
+        f"checkpoint, per Common Voice locale (also in the Evaluation Results "
+        f"metadata above):\n\n{table}\n"
+        if table
+        else ""
+    )
 
     return f"""{yaml}
 # {repo_id.split("/")[-1]}
@@ -283,6 +327,12 @@ Optimization) using a **blended error-rate reward**. Trained with
 [whisper-rl](https://github.com/will-rice/whisper-rl).
 
 {result_line}
+## Training data
+
+Fine-tuned on [{dataset}](https://huggingface.co/datasets/{dataset}) —
+{lang_scope}, streamed and decoded on the fly from {sample_scope}. Each clip's
+language is pinned from its Common Voice locale during training.
+{performance_section}
 ## How it was trained
 
 Instead of cross-entropy against a single reference, for each audio clip the
