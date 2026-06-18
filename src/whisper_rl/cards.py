@@ -113,28 +113,58 @@ def select_best(rows: list[dict]) -> dict | None:
     return min(val_rows, key=lambda row: row["val/wer"])
 
 
-def language_table(row: dict) -> str:
-    """Render a per-language WER/CER markdown table from a validation row.
+def model_index(repo_name: str, row: dict, dataset: str) -> str:
+    """Build a ``model-index`` YAML block with per-language metrics.
+
+    Each language (and an ``all`` overall entry) becomes a result keyed by a
+    Common Voice config, with WER and CER, so the Hub renders structured
+    per-language evaluation results.
 
     Args:
-        row: A validation row with ``val/wer_<lang>`` / ``val/cer_<lang>`` keys.
+        repo_name: The model repo name (model-index ``name``).
+        row: The best validation row with overall and per-language rates.
+        dataset: Hub dataset id the metrics were computed on.
 
     Returns:
-        A markdown table, or ``""`` when the row has no per-language keys.
+        The ``model-index:`` YAML block, or ``""`` if there are no metrics.
     """
+    if not row or row.get("val/wer") is None:
+        return ""
     langs = sorted(
         key.removeprefix("val/wer_") for key in row if key.startswith("val/wer_")
     )
-    if not langs:
+    configs = [(lang, f"val/wer_{lang}", f"val/cer_{lang}") for lang in langs]
+    configs.append(("all", "val/wer", "val/cer"))
+
+    results = ""
+    for config, wer_key, cer_key in configs:
+        wer = row.get(wer_key)
+        cer = row.get(cer_key)
+        metrics = ""
+        if wer is not None:
+            metrics += (
+                f"    - type: wer\n      value: {wer:.4f}\n      name: WER ({config})\n"
+            )
+        if cer is not None:
+            metrics += (
+                f"    - type: cer\n      value: {cer:.4f}\n      name: CER ({config})\n"
+            )
+        if not metrics:
+            continue
+        results += (
+            "  - task:\n"
+            "      type: automatic-speech-recognition\n"
+            "      name: Automatic Speech Recognition\n"
+            "    dataset:\n"
+            f"      type: {dataset}\n"
+            "      name: Common Voice 17.0\n"
+            f"      config: {config}\n"
+            "      split: validation\n"
+            "    metrics:\n" + metrics
+        )
+    if not results:
         return ""
-    lines = ["| Language | WER | CER |", "| --- | --- | --- |"]
-    for lang in langs:
-        wer = row.get(f"val/wer_{lang}")
-        cer = row.get(f"val/cer_{lang}")
-        wer_s = f"{wer:.3f}" if wer is not None else "—"
-        cer_s = f"{cer:.3f}" if cer is not None else "—"
-        lines.append(f"| `{lang}` | {wer_s} | {cer_s} |")
-    return "\n".join(lines)
+    return f"model-index:\n- name: {repo_name}\n  results:\n{results}"
 
 
 def fetch_series(run: wandb.apis.public.Run) -> dict[str, tuple[list, list]]:
@@ -215,27 +245,8 @@ def build_card(
     best = best or {}
     overall_wer = best.get("val/wer")
     overall_cer = best.get("val/cer")
-    table = language_table(best)
     n_langs = sum(1 for key in best if key.startswith("val/wer_"))
     scope = f"overall across {n_langs} languages" if n_langs > 1 else "overall"
-
-    metric_yaml = ""
-    if overall_wer is not None:
-        metric_yaml = (
-            "model-index:\n"
-            f"- name: {repo_id.split('/')[-1]}\n"
-            "  results:\n"
-            "  - task:\n"
-            "      type: automatic-speech-recognition\n"
-            "      name: Automatic Speech Recognition\n"
-            "    dataset:\n"
-            f"      type: {dataset}\n"
-            "      name: Common Voice 17.0\n"
-            "    metrics:\n"
-            "    - type: wer\n"
-            f"      value: {overall_wer:.4f}\n"
-            f"      name: Validation WER ({scope})\n"
-        )
 
     yaml = (
         "---\n"
@@ -248,7 +259,9 @@ def build_card(
         "language:\n"
         + "".join(f"- {code}\n" for code in languages)
         + "tags:\n- whisper\n- grpo\n- reinforcement-learning\n- asr\n"
-        "metrics:\n- wer\n- cer\n" + metric_yaml + "---\n"
+        "metrics:\n- wer\n- cer\n"
+        + model_index(repo_id.split("/")[-1], best, dataset)
+        + "---\n"
     )
 
     hp_rows = "\n".join(
@@ -257,16 +270,11 @@ def build_card(
     if overall_wer is not None:
         cer_part = f", CER {overall_cer:.3f}" if overall_cer is not None else ""
         result_line = (
-            f"**Best validation ({scope}): WER {overall_wer:.3f}{cer_part}**\n"
+            f"**Best validation ({scope}): WER {overall_wer:.3f}{cer_part}** — "
+            "see per-language WER/CER in the Evaluation Results above.\n"
         )
     else:
         result_line = ""
-    language_section = (
-        f"\n## Per-language results\n\nValidation WER and CER at the best "
-        f"checkpoint, per Common Voice locale:\n\n{table}\n"
-        if table
-        else ""
-    )
 
     return f"""{yaml}
 # {repo_id.split("/")[-1]}
@@ -275,7 +283,7 @@ A [Whisper]({base_url}) model fine-tuned with **GRPO** (Group Relative Policy
 Optimization) using a **blended error-rate reward**. Trained with
 [whisper-rl](https://github.com/will-rice/whisper-rl).
 
-{result_line}{language_section}
+{result_line}
 ## How it was trained
 
 Instead of cross-entropy against a single reference, for each audio clip the

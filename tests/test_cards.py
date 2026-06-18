@@ -1,6 +1,6 @@
 """Tests for model-card metric selection and per-language formatting."""
 
-from whisper_rl.cards import language_table, select_best
+from whisper_rl.cards import model_index, select_best
 
 
 def test_select_best_prefers_max_reward() -> None:
@@ -25,23 +25,29 @@ def test_select_best_none_when_no_validation() -> None:
     assert select_best([{"train/loss": 0.1}]) is None
 
 
-def test_language_table_lists_per_language_rates() -> None:
-    """The table renders one sorted row per language with WER and CER."""
+def test_model_index_has_per_language_metrics() -> None:
+    """Each language and an overall entry become model-index results."""
     row = {
         "val/wer": 0.4,
+        "val/cer": 0.155,
         "val/wer_en": 0.1,
         "val/cer_en": 0.05,
         "val/wer_de": 0.2,
         "val/cer_de": 0.08,
     }
-    table = language_table(row)
-    lines = table.splitlines()
-    assert lines[0] == "| Language | WER | CER |"
-    # Languages are sorted; German before English.
-    assert lines[2] == "| `de` | 0.200 | 0.080 |"
-    assert lines[3] == "| `en` | 0.100 | 0.050 |"
+    block = model_index("model", row, "fixie-ai/common_voice_17_0")
+    assert block.startswith("model-index:\n- name: model\n")
+    # One result per language plus an overall "all" entry.
+    assert "config: en" in block
+    assert "config: de" in block
+    assert "config: all" in block
+    # Both WER and CER for each (3 configs x 2 metrics).
+    assert block.count("type: wer") == 3
+    assert block.count("type: cer") == 3
+    assert "value: 0.1000" in block
 
 
-def test_language_table_empty_without_per_language_keys() -> None:
-    """A row with no per-language keys produces no table."""
-    assert language_table({"val/wer": 0.4}) == ""
+def test_model_index_empty_without_validation() -> None:
+    """No validation row yields no model-index block."""
+    assert model_index("model", {}, "ds") == ""
+    assert model_index("model", {"train/loss": 0.1}, "ds") == ""
