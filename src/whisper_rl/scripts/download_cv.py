@@ -15,6 +15,7 @@ import argparse
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import requests
@@ -30,6 +31,8 @@ BASE_URL = "https://mozilladatacollective.com"
 ID_PATTERN = re.compile(r"^[a-z0-9]{20,}$")
 # 30 downloads/day per organization; default a run to that ceiling.
 DAILY_LIMIT = 30
+# Multi-GB archives over long connections drop; resume and retry.
+DOWNLOAD_RETRIES = 6
 
 
 class RateLimitError(Exception):
@@ -87,8 +90,11 @@ def main() -> None:
             break
         if info is None:
             continue
-        if stream_download(info["downloadUrl"], archives / info["filename"], info):
-            downloaded += 1
+        try:
+            if stream_download(info["downloadUrl"], archives / info["filename"], info):
+                downloaded += 1
+        except Exception as error:  # pragma: no cover - keep the batch going
+            logger.warning("Download failed for %s: %s", card["locale"], error)
 
 
 def enumerate_release(release: str) -> list[dict]:
@@ -172,39 +178,66 @@ def request_download(session: requests.Session, dataset_id: str) -> dict | None:
 
 
 def stream_download(url: str, dest: Path, info: dict) -> bool:
-    """Stream a presigned URL to ``dest``, resuming a partial file.
+    """Stream a presigned URL to ``dest``, resuming across dropped connections.
+
+    Downloads to a ``.part`` file (so an interrupted transfer is never mistaken
+    for a complete archive), resuming with a ``Range`` request after a dropped
+    connection, and only renames to ``dest`` once the full size has arrived.
 
     Args:
-        url: The presigned download URL (no auth needed).
-        dest: Destination path.
+        url: The presigned download URL (no auth needed; valid ~12h).
+        dest: Final destination path.
         info: The download payload (for the expected size).
 
     Returns:
-        ``True`` if the file is complete after this call.
+        ``True`` if ``dest`` is complete, ``False`` if still incomplete after
+        the retry budget (the ``.part`` file is kept for the next run).
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    expected = int(info.get("sizeBytes") or 0)
-    have = dest.stat().st_size if dest.exists() else 0
-    if expected and have >= expected:
+    if dest.exists():
         logger.info("Already complete: %s", dest.name)
         return True
-    headers = {"Range": f"bytes={have}-"} if have else {}
-    with requests.get(url, headers=headers, stream=True, timeout=120) as response:
-        response.raise_for_status()
-        with (
-            dest.open("ab" if have else "wb") as handle,
-            tqdm(
-                total=expected or None,
-                initial=have,
-                unit="B",
-                unit_scale=True,
-                desc=dest.name[:30],
-            ) as bar,
-        ):
-            for block in response.iter_content(chunk_size=1 << 20):
-                handle.write(block)
-                bar.update(len(block))
-    return not expected or dest.stat().st_size >= expected
+    expected = int(info.get("sizeBytes") or 0)
+    part = dest.with_name(dest.name + ".part")
+    for attempt in range(DOWNLOAD_RETRIES):
+        have = part.stat().st_size if part.exists() else 0
+        if expected and have >= expected:
+            break
+        headers = {"Range": f"bytes={have}-"} if have else {}
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=120) as r:
+                r.raise_for_status()
+                with (
+                    part.open("ab" if have else "wb") as handle,
+                    tqdm(
+                        total=expected or None,
+                        initial=have,
+                        unit="B",
+                        unit_scale=True,
+                        desc=dest.name[:30],
+                    ) as bar,
+                ):
+                    for block in r.iter_content(chunk_size=1 << 20):
+                        handle.write(block)
+                        bar.update(len(block))
+            if not expected:
+                break  # no size to verify against; one clean pass is enough
+        except requests.exceptions.RequestException as error:
+            wait = 2**attempt
+            logger.warning(
+                "Interrupted %s (%s); resuming in %ds (try %d/%d)",
+                dest.name,
+                error,
+                wait,
+                attempt + 1,
+                DOWNLOAD_RETRIES,
+            )
+            time.sleep(wait)
+    if expected and (not part.exists() or part.stat().st_size < expected):
+        logger.error("Incomplete after retries: %s — will resume next run", dest.name)
+        return False
+    part.rename(dest)
+    return True
 
 
 if __name__ == "__main__":
