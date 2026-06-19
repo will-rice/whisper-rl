@@ -52,3 +52,4 @@ filterwarnings = ["ignore::DeprecationWarning"]
 [project.scripts]
 train = "whisper_rl.scripts.train:main"
 upload-card = "whisper_rl.scripts.upload_card:main"
+ingest-cv = "whisper_rl.scripts.ingest_cv:main"

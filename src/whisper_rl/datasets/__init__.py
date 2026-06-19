@@ -3,6 +3,7 @@
 import logging
 import os
 from collections.abc import Iterator
+from pathlib import Path
 from typing import NamedTuple
 
 import torch
@@ -56,6 +57,9 @@ def load_stream(config: Config, split: str) -> HFIterableDataset:
         A Hugging Face streaming dataset with audio cast to
         ``config.sample_rate``.
     """
+    if Path(config.dataset_name).is_dir():
+        return _load_local_stream(config, split)
+
     token = os.environ.get("HUGGINGFACE_TOKEN")
     locales = config.languages
     if locales is None:
@@ -84,6 +88,28 @@ def load_stream(config: Config, split: str) -> HFIterableDataset:
     if len(streams) == 1:
         return streams[0]
     return interleave_datasets(streams, stopping_strategy="all_exhausted")
+
+
+def _load_local_stream(config: Config, split: str) -> HFIterableDataset:
+    """Stream a local ``ingest-cv`` parquet index for ``split``.
+
+    The index rows hold the clip's on-disk path in the audio column; casting to
+    :class:`~datasets.Audio` decodes the mp3s on the fly, and the per-clip
+    ``locale`` column drives per-language metrics. All locales are streamed
+    together (one parquet per locale), so no interleaving is needed.
+
+    Args:
+        config: Project configuration; ``dataset_name`` is the index directory.
+        split: Dataset split to stream.
+
+    Returns:
+        A streaming dataset with audio cast to ``config.sample_rate``.
+    """
+    pattern = str(Path(config.dataset_name) / split / "*.parquet")
+    stream = load_dataset("parquet", data_files=pattern, split="train", streaming=True)
+    return stream.cast_column(
+        config.audio_column, Audio(sampling_rate=config.sample_rate)
+    )
 
 
 def prepare_example(
