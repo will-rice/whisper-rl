@@ -32,7 +32,7 @@ ID_PATTERN = re.compile(r"^[a-z0-9]{20,}$")
 DAILY_LIMIT = 30
 
 
-class RateLimited(Exception):
+class RateLimitError(Exception):
     """Raised when the API's daily download limit is reached."""
 
 
@@ -82,7 +82,7 @@ def main() -> None:
             break
         try:
             info = request_download(session, card["id"])
-        except RateLimited:
+        except RateLimitError:
             logger.error("Daily download limit hit; rerun after the UTC reset.")
             break
         if info is None:
@@ -157,7 +157,7 @@ def request_download(session: requests.Session, dataset_id: str) -> dict | None:
         accepted (403).
 
     Raises:
-        RateLimited: If the API returns 429 (daily limit reached).
+        RateLimitError: If the API returns 429 (daily limit reached).
     """
     response = session.post(
         f"{BASE_URL}/api/datasets/{dataset_id}/download", timeout=60
@@ -166,7 +166,7 @@ def request_download(session: requests.Session, dataset_id: str) -> dict | None:
         logger.warning("Terms not accepted for %s — accept on the website.", dataset_id)
         return None
     if response.status_code == 429:
-        raise RateLimited
+        raise RateLimitError
     response.raise_for_status()
     return response.json()
 

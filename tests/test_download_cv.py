@@ -7,7 +7,7 @@ _CARD = (
     "<span>Common Voice</span> Common Voice Scripted Speech 26.0 - {name}"
     '<span class="truncate">A collection of read speech recordings in {name}.</span>'
     "<span>License</span>: CC0-1.0 <span>Locale</span>: {locale} "
-    "<span>Task</span>: ASR <span>Format</span>: MP3 <span>Size</span>: {size}</div></a>"
+    "<span>Task</span>: ASR <span>Size</span>: {size}</div></a>"
 )
 
 
