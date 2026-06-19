@@ -95,8 +95,8 @@ def _load_local_stream(config: Config, split: str) -> HFIterableDataset:
 
     The index rows hold the clip's on-disk path in the audio column; casting to
     :class:`~datasets.Audio` decodes the mp3s on the fly, and the per-clip
-    ``locale`` column drives per-language metrics. All locales are streamed
-    together (one parquet per locale), so no interleaving is needed.
+    ``locale`` column drives per-language metrics. ``config.languages`` selects
+    which per-locale parquet files to stream (all of them when ``None``).
 
     Args:
         config: Project configuration; ``dataset_name`` is the index directory.
@@ -105,8 +105,16 @@ def _load_local_stream(config: Config, split: str) -> HFIterableDataset:
     Returns:
         A streaming dataset with audio cast to ``config.sample_rate``.
     """
-    pattern = str(Path(config.dataset_name) / split / "*.parquet")
-    stream = load_dataset("parquet", data_files=pattern, split="train", streaming=True)
+    base = Path(config.dataset_name) / split
+    if config.languages:
+        data_files: str | list[str] = [
+            str(base / f"{locale}.parquet") for locale in config.languages
+        ]
+    else:
+        data_files = str(base / "*.parquet")
+    stream = load_dataset(
+        "parquet", data_files=data_files, split="train", streaming=True
+    )
     return stream.cast_column(
         config.audio_column, Audio(sampling_rate=config.sample_rate)
     )
