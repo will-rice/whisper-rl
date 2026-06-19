@@ -73,6 +73,26 @@ Common Voice convention (`sentence`, `audio`, `locale`); override them in
 Audio decoding uses [`torchcodec`](https://github.com/pytorch/torchcodec),
 which needs the FFmpeg shared libraries (FFmpeg 4–7) installed on the host.
 
+### Newer Common Voice from source
+
+Common Voice releases after 17 have no working parquet mirror on the Hub, and
+Mozilla now distributes them only through the
+[Mozilla Data Collective](https://datacollective.mozillafoundation.org)
+(account + license required). To train on a newer release, download the
+per-locale archives, extract them so each locale is a directory
+(`<root>/<locale>/clips/*.mp3` plus `train.tsv` / `dev.tsv`), then build a
+streamable parquet index:
+
+```bash
+uv run ingest-cv <extracted_root> <index_dir>
+```
+
+`ingest-cv` keeps only locales Whisper has a language token for and writes
+`<index_dir>/<split>/<locale>.parquet` rows of `(audio_path, sentence,
+locale)` — the audio is **not** copied; the clips are decoded on the fly from
+disk at train time. Point `dataset_name` at `<index_dir>` (a local path) and
+training streams it exactly like a Hub dataset.
+
 ## Usage
 
 By default `train` streams **every Common Voice 17 locale** (auto-discovered
