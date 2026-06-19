@@ -48,20 +48,28 @@ def main() -> None:
     parser.add_argument(
         "--max", default=DAILY_LIMIT, type=int, help="Max downloads this run."
     )
+    parser.add_argument(
+        "--locales",
+        default="",
+        type=str,
+        help="Comma-separated locales to restrict to (default: all supported).",
+    )
     parser.add_argument("--list_only", action="store_true", help="Only print the plan.")
     args = parser.parse_args()
     load_dotenv()
 
     supported = whisper_supported()
+    only = {loc for loc in args.locales.split(",") if loc}
     datasets = [
         card
         for card in enumerate_release(args.release)
         if card["locale"].split("-")[0] in supported
+        and (not only or card["locale"] in only)
     ]
     logger.info("%d Whisper-supported locales for %s", len(datasets), args.release)
     if args.list_only:
         for card in datasets:
-            logger.info("%s\t%s", card["locale"], card["name"])
+            logger.info("%s  %s  %s", card["locale"], card["id"], card["name"])
         return
 
     session = requests.Session()
@@ -151,7 +159,9 @@ def request_download(session: requests.Session, dataset_id: str) -> dict | None:
     Raises:
         RateLimited: If the API returns 429 (daily limit reached).
     """
-    response = session.post(f"{BASE_URL}/api/datasets/{dataset_id}/download", timeout=60)
+    response = session.post(
+        f"{BASE_URL}/api/datasets/{dataset_id}/download", timeout=60
+    )
     if response.status_code == 403:
         logger.warning("Terms not accepted for %s — accept on the website.", dataset_id)
         return None
