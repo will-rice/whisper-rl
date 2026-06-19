@@ -1,11 +1,23 @@
 """Tests for model-card metric selection and per-language formatting."""
 
 from whisper_rl.cards import (
+    dataset_label,
     fetch_validation_rows,
     language_table,
     model_index,
     select_best,
 )
+
+
+def test_dataset_label_strips_local_index_path() -> None:
+    """A local index directory shows a clean dataset name."""
+    assert dataset_label("/data/common_voice_26/index") == "common_voice_26"
+    assert dataset_label("/data/cv25") == "cv25"
+
+
+def test_dataset_label_passes_through_hub_ids() -> None:
+    """Hub dataset ids are left untouched."""
+    assert dataset_label("fixie-ai/common_voice_17_0") == "fixie-ai/common_voice_17_0"
 
 
 class _StubRun:
