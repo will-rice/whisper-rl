@@ -99,7 +99,9 @@ def main() -> None:
         callbacks.append(PushBestToHub(experiment_name, processor))
 
     trainer = Trainer(
-        max_epochs=config.max_epochs,
+        # The train stream has no length; -1 disables the epoch limit so
+        # max_steps is the sole stop condition (an "epoch" = one stream pass).
+        max_epochs=-1,
         max_steps=config.max_steps,
         devices=args.num_devices,
         gradient_clip_val=config.grad_clip,

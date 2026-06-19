@@ -69,9 +69,9 @@ class Config(BaseModel):
     # Small constant added to the per-group std when normalizing advantages.
     advantage_eps: float = 1e-4
 
-    # Training. The streamed train dataset has no length, so validation
-    # cadence is in optimizer steps and ``max_steps`` bounds the run.
-    max_epochs: int = 1
+    # Training. The streamed train dataset has no length, so the run is bound
+    # solely by ``max_steps`` (epochs are disabled in the trainer); validation
+    # cadence is likewise in optimizer steps.
     max_steps: int = 500
     learning_rate: float = 1e-6
     min_learning_rate: float = 1e-7
