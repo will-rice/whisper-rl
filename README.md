@@ -93,6 +93,16 @@ locale)` — the audio is **not** copied; the clips are decoded on the fly from
 disk at train time. Point `dataset_name` at `<index_dir>` (a local path) and
 training streams it exactly like a Hub dataset.
 
+`download-cv` needs an `MDC_API_KEY` and per-dataset terms accepted on the
+website; downloads are capped at 30/day per organization. `scripts/daily_cv.sh`
+wraps download → extract → ingest so the corpus can fill in over several days
+from cron:
+
+```cron
+0 1 * * * /bin/bash $HOME/projects/whisper-rl/scripts/daily_cv.sh \
+    >> /data/common_voice_26/daily.log 2>&1
+```
+
 ## Usage
 
 By default `train` streams **every Common Voice 17 locale** (auto-discovered
