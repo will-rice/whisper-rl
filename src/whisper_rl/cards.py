@@ -9,6 +9,7 @@ the card whenever it pushes a new best checkpoint.
 
 import io
 import logging
+from pathlib import Path
 
 import matplotlib
 import wandb
@@ -112,6 +113,24 @@ def select_best(rows: list[dict]) -> dict | None:
     return min(val_rows, key=lambda row: row["val/wer"])
 
 
+def dataset_label(dataset_name: str) -> str:
+    """Return a clean display name for a dataset.
+
+    Hub ids (``org/name``) pass through; a local index path such as
+    ``/data/common_voice_26/index`` becomes ``common_voice_26``.
+
+    Args:
+        dataset_name: The configured ``dataset_name`` (Hub id or local path).
+
+    Returns:
+        A human-friendly dataset name.
+    """
+    if not dataset_name.startswith("/"):
+        return dataset_name
+    path = Path(dataset_name)
+    return path.parent.name if path.name in {"index", "data"} else path.name
+
+
 def model_index(repo_name: str, row: dict, dataset: str) -> str:
     """Build a ``model-index`` YAML block with per-language metrics.
 
@@ -156,7 +175,7 @@ def model_index(repo_name: str, row: dict, dataset: str) -> str:
             "      name: Automatic Speech Recognition\n"
             "    dataset:\n"
             f"      type: {dataset}\n"
-            "      name: Common Voice 17.0\n"
+            f"      name: {dataset}\n"
             f"      config: {config}\n"
             "      split: validation\n"
             "    metrics:\n" + metrics
@@ -262,7 +281,14 @@ def build_card(
     """
     config = run.config
     languages = config.get("languages") or ["en"]
-    dataset = config.get("dataset_name", "fixie-ai/common_voice_17_0")
+    raw_dataset = config.get("dataset_name", "fixie-ai/common_voice_17_0")
+    dataset = dataset_label(raw_dataset)
+    # Local indexes have no Hub page; only link Hub dataset ids.
+    dataset_ref = (
+        dataset
+        if raw_dataset.startswith("/")
+        else f"[{dataset}](https://huggingface.co/datasets/{dataset})"
+    )
     base_model = config.get("base_model", "openai/whisper-tiny")
     base_url = f"https://huggingface.co/{base_model}"
 
@@ -329,9 +355,9 @@ Optimization) using a **blended error-rate reward**. Trained with
 {result_line}
 ## Training data
 
-Fine-tuned on [{dataset}](https://huggingface.co/datasets/{dataset}) —
-{lang_scope}, streamed and decoded on the fly from {sample_scope}. Each clip's
-language is pinned from its Common Voice locale during training.
+Fine-tuned on {dataset_ref} — {lang_scope}, streamed and decoded on the fly
+from {sample_scope}. Each clip's language is pinned from its Common Voice locale
+during training.
 {performance_section}
 ## How it was trained
 
