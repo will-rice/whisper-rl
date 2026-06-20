@@ -88,6 +88,7 @@ def main() -> None:
         monitor="val/reward",
         mode="max",
         save_top_k=1,
+        save_last=True,
         filename="{step}-{val/wer:.3f}",
         auto_insert_metric_name=False,
     )
