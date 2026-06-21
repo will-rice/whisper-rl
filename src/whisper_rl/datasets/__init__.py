@@ -91,12 +91,16 @@ def load_stream(config: Config, split: str) -> HFIterableDataset:
 
 
 def _load_local_stream(config: Config, split: str) -> HFIterableDataset:
-    """Stream a local ``ingest-cv`` parquet index for ``split``.
+    """Stream a local parquet index for ``split``, interleaved by locale.
 
-    The index rows hold the clip's on-disk path in the audio column; casting to
-    :class:`~datasets.Audio` decodes the mp3s on the fly, and the per-clip
-    ``locale`` column drives per-language metrics. ``config.languages`` selects
-    which per-locale parquet files to stream (all of them when ``None``).
+    Each locale is loaded as its own stream and the streams are round-robin
+    interleaved (as in the Hub path) so batches mix languages instead of
+    training one locale at a time. A locale is either a ``<locale>.parquet``
+    file (``ingest-cv`` layout) or a ``<locale>/`` directory of shards (e.g. a
+    downloaded Common Voice mirror). ``config.languages`` selects the locales
+    (all present when ``None``). Casting the audio column to
+    :class:`~datasets.Audio` decodes on the fly; the per-row ``locale`` column
+    drives per-language metrics.
 
     Args:
         config: Project configuration; ``dataset_name`` is the index directory.
@@ -107,17 +111,29 @@ def _load_local_stream(config: Config, split: str) -> HFIterableDataset:
     """
     base = Path(config.dataset_name) / split
     if config.languages:
-        data_files: str | list[str] = [
-            str(base / f"{locale}.parquet") for locale in config.languages
-        ]
+        locales = list(config.languages)
     else:
-        data_files = str(base / "*.parquet")
-    stream = load_dataset(
-        "parquet", data_files=data_files, split="train", streaming=True
-    )
-    return stream.cast_column(
-        config.audio_column, Audio(sampling_rate=config.sample_rate)
-    )
+        subdirs = sorted(p.name for p in base.iterdir() if p.is_dir())
+        locales = subdirs or sorted(p.stem for p in base.glob("*.parquet"))
+    streams = []
+    for locale in locales:
+        locale_dir = base / locale
+        files = (
+            str(locale_dir / "*.parquet")
+            if locale_dir.is_dir()
+            else str(base / f"{locale}.parquet")
+        )
+        stream = load_dataset(
+            "parquet", data_files=files, split="train", streaming=True
+        )
+        streams.append(
+            stream.cast_column(
+                config.audio_column, Audio(sampling_rate=config.sample_rate)
+            )
+        )
+    if len(streams) == 1:
+        return streams[0]
+    return interleave_datasets(streams, stopping_strategy="all_exhausted")
 
 
 def prepare_example(
