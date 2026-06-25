@@ -8,6 +8,7 @@ from whisper_rl.grpo import (
     grpo_loss,
     kl_divergence,
     sequence_log_probs,
+    sft_loss,
 )
 
 
@@ -91,3 +92,33 @@ def test_grpo_loss_respects_mask() -> None:
     loss, _ = grpo_loss(log_probs, log_probs, log_probs, advantages, mask, kl_beta=0.0)
     # Only two unmasked tokens, each contributing -advantage.
     assert torch.allclose(loss, torch.tensor(-2.0))
+
+
+def test_sft_loss_near_zero_for_confident_correct_predictions() -> None:
+    """Teacher-forced NLL is ~0 when logits strongly favor the targets."""
+    targets = torch.tensor([[1, 2, 3], [0, 2, 1]])
+    logits = torch.zeros(2, 3, 5)
+    for b in range(2):
+        for t in range(3):
+            logits[b, t, targets[b, t]] = 50.0
+    loss = sft_loss(logits, targets, torch.ones(2, 3))
+    assert loss.item() < 1e-3
+
+
+def test_sft_loss_only_counts_masked_positions() -> None:
+    """Prompt/padding positions (mask 0) must not contribute to the NLL."""
+    targets = torch.tensor([[1, 2]])
+    logits = torch.zeros(1, 2, 4)
+    logits[0, 0, 1] = 50.0  # position 0 confident + masked in -> ~0 loss
+    # position 1 left uniform (would add loss) but is masked out
+    loss = sft_loss(logits, targets, torch.tensor([[1.0, 0.0]]))
+    assert loss.item() < 1e-3
+
+
+def test_sft_loss_is_positive_and_differentiable() -> None:
+    """Uniform logits give a positive NLL with gradients flowing back."""
+    logits = torch.zeros(1, 2, 4, requires_grad=True)
+    loss = sft_loss(logits, torch.tensor([[1, 2]]), torch.ones(1, 2))
+    assert torch.allclose(loss, torch.tensor(4.0).log())  # -log(1/4) per token
+    loss.backward()
+    assert logits.grad is not None
