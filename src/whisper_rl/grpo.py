@@ -52,6 +52,31 @@ def sequence_log_probs(logits: torch.Tensor, targets: torch.Tensor) -> torch.Ten
     return log_probs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
 
 
+def sft_loss(
+    logits: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor
+) -> torch.Tensor:
+    """Masked, token-averaged supervised cross-entropy (teacher forcing).
+
+    Unlike the GRPO term, which only reweights the model's *own* samples, this
+    is a direct supervised signal toward the reference tokens, so it can teach
+    sequences the policy would never sample on its own.
+
+    Args:
+        logits: Decoder logits of shape ``(batch, seq_len, vocab)`` where
+            position ``t`` scores the distribution over ``targets[:, t]``.
+        targets: Reference token ids of shape ``(batch, seq_len)``.
+        mask: ``1`` on the reference tokens to supervise, ``0`` on prompt and
+            padding positions, shape ``(batch, seq_len)``.
+
+    Returns:
+        Scalar negative log-likelihood averaged over the masked tokens.
+    """
+    log_probs = sequence_log_probs(logits, targets)
+    mask = mask.to(log_probs.dtype)
+    token_count = mask.sum().clamp(min=1.0)
+    return -(log_probs * mask).sum() / token_count
+
+
 def kl_divergence(
     policy_log_probs: torch.Tensor, ref_log_probs: torch.Tensor
 ) -> torch.Tensor:

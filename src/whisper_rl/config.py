@@ -68,6 +68,11 @@ class Config(BaseModel):
     clip_eps: float = 0.2
     # Small constant added to the per-group std when normalizing advantages.
     advantage_eps: float = 1e-4
+    # Weight of the supervised cross-entropy term added to the GRPO loss. This
+    # is a direct teaching signal toward the reference, so it can move languages
+    # the policy never samples correctly (where GRPO alone has no gradient).
+    # ``0`` disables it (pure GRPO).
+    sft_weight: float = 1.0
 
     # Training. The streamed train dataset has no length, so the run is bound
     # solely by ``max_steps`` (epochs are disabled in the trainer); validation

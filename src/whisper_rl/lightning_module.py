@@ -12,6 +12,7 @@ from whisper_rl.grpo import (
     group_advantages,
     grpo_loss,
     sequence_log_probs,
+    sft_loss,
 )
 from whisper_rl.metrics import LanguageErrorRate
 from whisper_rl.modeling import (
@@ -119,17 +120,56 @@ class WhisperGRPOModule(LightningModule):
         log_probs = sequence_log_probs(logits, targets)
         return log_probs[:, prompt.size(1) - 1 :]
 
+    def _sft_loss(
+        self,
+        input_features: torch.Tensor,
+        prompt: torch.Tensor,
+        references: list[str],
+    ) -> torch.Tensor:
+        """Supervised cross-entropy toward the reference transcripts.
+
+        Teacher-forces each reference (tokenized and EOS-terminated) after the
+        pinned decoder prompt and averages the negative log-likelihood over the
+        reference tokens. Unlike the GRPO term this is a direct teaching signal,
+        so it can move languages the policy never samples correctly.
+
+        Args:
+            input_features: Encoder features of shape ``(batch, n_mels, frames)``.
+            prompt: Pinned decoder prompt ids of shape ``(batch, prompt_len)``.
+            references: Ground-truth transcript per clip.
+
+        Returns:
+            The scalar supervised loss.
+        """
+        encoded = self.processor.tokenizer(references, add_special_tokens=False)
+        rows = [ids + [self.eos_token_id] for ids in encoded["input_ids"]]
+        max_len = max(len(row) for row in rows)
+        ref_ids = torch.full(
+            (len(rows), max_len), self.eos_token_id, device=self.device
+        )
+        ref_mask = torch.zeros((len(rows), max_len), device=self.device)
+        for i, row in enumerate(rows):
+            ref_ids[i, : len(row)] = torch.tensor(row, device=self.device)
+            ref_mask[i, : len(row)] = 1.0
+        sequences = torch.cat([prompt, ref_ids], dim=1)
+        logits = self.policy(
+            input_features=input_features, decoder_input_ids=sequences[:, :-1]
+        ).logits
+        prompt_pad = torch.zeros((len(rows), prompt.size(1) - 1), device=self.device)
+        mask = torch.cat([prompt_pad, ref_mask], dim=1)
+        return sft_loss(logits, sequences[:, 1:], mask)
+
     def training_step(self, batch: Batch, batch_idx: int) -> torch.Tensor:
-        """Run one GRPO update on a batch of audio clips."""
+        """Run one GRPO + SFT update on a batch of audio clips."""
         num_gen = self.config.num_generations
         features = repeat_features(batch.input_features, num_gen)
         references = [ref for ref in batch.references for _ in range(num_gen)]
 
         # Pin each clip's known language, then repeat to match the sampled group.
-        prompt = decoder_prompt(
+        base_prompt = decoder_prompt(
             self.policy, batch.input_features, self.config.task, batch.languages
         )
-        prompt = prompt.repeat_interleave(num_gen, dim=0)
+        prompt = base_prompt.repeat_interleave(num_gen, dim=0)
         completion_ids = self._generate(features, prompt, sample=True)
         hypotheses = self.processor.batch_decode(
             completion_ids, skip_special_tokens=True
@@ -155,7 +195,7 @@ class WhisperGRPOModule(LightningModule):
         old_log_probs = policy_log_probs.detach()
         mask = completion_mask_from_ids(completion_ids, self.eos_token_id)
 
-        loss, mean_kl = grpo_loss(
+        policy_loss, mean_kl = grpo_loss(
             policy_log_probs,
             old_log_probs,
             ref_log_probs,
@@ -164,9 +204,13 @@ class WhisperGRPOModule(LightningModule):
             clip_eps=self.config.clip_eps,
             kl_beta=self.config.kl_beta,
         )
+        supervised = self._sft_loss(batch.input_features, base_prompt, batch.references)
+        loss = policy_loss + self.config.sft_weight * supervised
 
         batch_size = batch.input_features.size(0)
         self.log("train/loss", loss, prog_bar=True, batch_size=batch_size)
+        self.log("train/grpo_loss", policy_loss, batch_size=batch_size)
+        self.log("train/sft_loss", supervised, prog_bar=True, batch_size=batch_size)
         self.log("train/reward", rewards.mean(), prog_bar=True, batch_size=batch_size)
         self.log("train/kl", mean_kl, batch_size=batch_size)
         self.log(
