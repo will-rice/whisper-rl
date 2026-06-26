@@ -14,6 +14,7 @@ Point ``Config.dataset_name`` at the output directory to train on it.
 import argparse
 import csv
 import logging
+import sys
 from pathlib import Path
 
 import pyarrow as pa
@@ -23,6 +24,10 @@ from transformers.models.whisper.tokenization_whisper import LANGUAGES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Common Voice transcripts occasionally carry fields past csv's default 128KB
+# limit (e.g. very long sentences), which otherwise aborts the whole ingest.
+csv.field_size_limit(sys.maxsize)
 
 # Common Voice split file -> the split name we expose (dev is our validation).
 SPLITS = {"train": "train.tsv", "validation": "dev.tsv"}
