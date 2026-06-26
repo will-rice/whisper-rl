@@ -156,8 +156,14 @@ class PushBestToHub(Callback):
         """Regenerate the model card from the live W&B run, if one exists."""
         if not isinstance(trainer.logger, WandbLogger):
             return
-        run_path = "/".join(trainer.logger.experiment.path)
-        write_card(self.repo_name, wandb.Api().run(run_path))
+        # Build the run path explicitly; ``experiment.path`` does not reliably
+        # yield ``[entity, project, id]`` (it has resolved to single characters),
+        # which made the lookup fail and silently skip every card update.
+        run = trainer.logger.experiment
+        write_card(
+            self.repo_name,
+            wandb.Api().run(f"{run.entity}/{run.project}/{run.id}"),
+        )
 
 
 if __name__ == "__main__":
