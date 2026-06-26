@@ -38,6 +38,20 @@ def test_build_records_missing_tsv_is_empty(tmp_path: Path) -> None:
     assert build_records(locale_dir, "dev.tsv", "en") == []
 
 
+def test_build_records_handles_oversized_csv_field(tmp_path: Path) -> None:
+    """A transcript field larger than csv's default 128KB limit must not crash."""
+    locale_dir = tmp_path / "xx"
+    (locale_dir / "clips").mkdir(parents=True)
+    (locale_dir / "clips" / "a.mp3").write_bytes(b"x")
+    huge = "a" * 200_000  # exceeds csv's default field limit (131072)
+    (locale_dir / "train.tsv").write_text(f"path\tsentence\na.mp3\t{huge}\n")
+
+    records = build_records(locale_dir, "train.tsv", "xx")
+
+    assert len(records) == 1
+    assert records[0]["sentence"] == huge
+
+
 def test_whisper_supported_includes_major_languages_and_excludes_non_whisper() -> None:
     """Region codes are stripped; non-Whisper Common Voice locales are excluded."""
     supported = whisper_supported()
