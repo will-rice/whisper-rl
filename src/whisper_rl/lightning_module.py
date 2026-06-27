@@ -142,7 +142,12 @@ class WhisperGRPOModule(LightningModule):
             The scalar supervised loss.
         """
         encoded = self.processor.tokenizer(references, add_special_tokens=False)
-        rows = [ids + [self.eos_token_id] for ids in encoded["input_ids"]]
+        # Cap each reference so ``prompt + reference`` fits the decoder's
+        # positional budget. Some transcripts are thousands of tokens, which
+        # otherwise overruns the position embeddings and triggers a device-side
+        # index assert.
+        cap = self.policy.config.max_target_positions - prompt.size(1)
+        rows = [ids[: cap - 1] + [self.eos_token_id] for ids in encoded["input_ids"]]
         max_len = max(len(row) for row in rows)
         ref_ids = torch.full(
             (len(rows), max_len), self.eos_token_id, device=self.device
