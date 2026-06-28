@@ -107,19 +107,26 @@ def enumerate_release(release: str) -> list[dict]:
         ``{"id", "name", "locale"}`` for each matching dataset.
     """
     found: list[dict] = []
-    seen: set[str] = set()
-    for page in range(1, 60):
+    found_ids: set[str] = set()
+    seen_cards: set[str] = set()
+    # The catalog's text search caps results, so page the whole listing (sorted,
+    # ~24 cards/page) and keep the cards whose title matches the release. End of
+    # catalog is detected by all card ids, not release-matching ones (early pages
+    # may contain zero cards for a given release).
+    for page in range(1, 100):
         html = requests.get(
-            f"{BASE_URL}/datasets",
-            params={"q": f"Common Voice {release}", "page": page},
-            timeout=60,
+            f"{BASE_URL}/datasets", params={"page": page}, timeout=60
         ).text
-        fresh = [c for c in parse_catalog(html, release) if c["id"] not in seen]
-        if not fresh:
+        page_ids = {
+            m for m in re.findall(r"/datasets/([a-z0-9]+)", html) if ID_PATTERN.match(m)
+        }
+        if not page_ids - seen_cards:
             break
-        for card in fresh:
-            seen.add(card["id"])
-            found.append(card)
+        seen_cards |= page_ids
+        for card in parse_catalog(html, release):
+            if card["id"] not in found_ids:
+                found_ids.add(card["id"])
+                found.append(card)
     return found
 
 
