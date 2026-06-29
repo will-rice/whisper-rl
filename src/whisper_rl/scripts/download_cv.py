@@ -12,6 +12,7 @@ to ``ingest-cv`` next.
 """
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -78,11 +79,21 @@ def main() -> None:
     session = requests.Session()
     session.headers["Authorization"] = f"Bearer {os.environ['MDC_API_KEY']}"
     archives = args.output_dir / "archives"
+    manifest_path = archives / "manifest.json"
+    manifest = load_manifest(manifest_path)
     downloaded = 0
     for card in datasets:
         if downloaded >= args.max:
             logger.info("Reached --max=%d for this run; rerun to continue.", args.max)
             break
+        # The server names the archive (opaque hash), so a request_download POST
+        # is the only way to learn the filename — and each issued URL spends a
+        # slot of the 30/day budget. Record id -> filename on success so reruns
+        # skip held archives without a wasted request. Deleting an archive (file
+        # gone) re-triggers its download.
+        held = manifest.get(card["id"])
+        if held and (archives / held).exists():
+            continue
         try:
             info = request_download(session, card["id"])
         except RateLimitError:
@@ -93,8 +104,22 @@ def main() -> None:
         try:
             if stream_download(info["downloadUrl"], archives / info["filename"], info):
                 downloaded += 1
+                manifest[card["id"]] = info["filename"]
+                manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
         except Exception as error:  # pragma: no cover - keep the batch going
             logger.warning("Download failed for %s: %s", card["locale"], error)
+
+
+def load_manifest(path: Path) -> dict[str, str]:
+    """Load the dataset-id -> archive-filename map of already-held downloads.
+
+    Args:
+        path: The ``manifest.json`` path (absent on the first ever run).
+
+    Returns:
+        The map, or an empty dict if no manifest exists yet.
+    """
+    return json.loads(path.read_text()) if path.exists() else {}
 
 
 def enumerate_release(release: str) -> list[dict]:
@@ -107,19 +132,26 @@ def enumerate_release(release: str) -> list[dict]:
         ``{"id", "name", "locale"}`` for each matching dataset.
     """
     found: list[dict] = []
-    seen: set[str] = set()
-    for page in range(1, 60):
+    found_ids: set[str] = set()
+    seen_cards: set[str] = set()
+    # The catalog's text search caps results, so page the whole listing (sorted,
+    # ~24 cards/page) and keep the cards whose title matches the release. End of
+    # catalog is detected by all card ids, not release-matching ones (early pages
+    # may contain zero cards for a given release).
+    for page in range(1, 100):
         html = requests.get(
-            f"{BASE_URL}/datasets",
-            params={"q": f"Common Voice {release}", "page": page},
-            timeout=60,
+            f"{BASE_URL}/datasets", params={"page": page}, timeout=60
         ).text
-        fresh = [c for c in parse_catalog(html, release) if c["id"] not in seen]
-        if not fresh:
+        page_ids = {
+            m for m in re.findall(r"/datasets/([a-z0-9]+)", html) if ID_PATTERN.match(m)
+        }
+        if not page_ids - seen_cards:
             break
-        for card in fresh:
-            seen.add(card["id"])
-            found.append(card)
+        seen_cards |= page_ids
+        for card in parse_catalog(html, release):
+            if card["id"] not in found_ids:
+                found_ids.add(card["id"])
+                found.append(card)
     return found
 
 
