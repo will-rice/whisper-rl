@@ -56,6 +56,7 @@ def write_card(
     """
     best = select_best(fetch_validation_rows(run))
     api = HfApi()
+    repo_id = qualify_repo_id(repo_id, api)
     api.upload_file(
         path_or_fileobj=render_curves(fetch_series(run)),
         path_in_repo="training_curves.png",
@@ -70,6 +71,27 @@ def write_card(
     )
     best_wer = best.get("val/wer") if best else None
     logging.info("Uploaded card to %s (overall val/wer=%s)", repo_id, best_wer)
+
+
+def qualify_repo_id(repo_id: str, api: HfApi) -> str:
+    """Prepend the authenticated namespace to a bare repo id.
+
+    ``Model.push_to_hub`` resolves a namespace-less name to the current user,
+    but ``HfApi.upload_file`` does not — it 404s on a bare name. The training
+    loop pushes the model with a bare experiment name, so mirror that
+    resolution here to keep the card on the same repo.
+
+    Args:
+        repo_id: A repo id, with or without an ``owner/`` namespace.
+        api: Authenticated Hub client, used to look up the current user.
+
+    Returns:
+        ``repo_id`` unchanged if it already has a namespace, else
+        ``"<user>/<repo_id>"``.
+    """
+    if "/" in repo_id:
+        return repo_id
+    return f"{api.whoami()['name']}/{repo_id}"
 
 
 def fetch_validation_rows(run: wandb.apis.public.Run) -> list[dict]:

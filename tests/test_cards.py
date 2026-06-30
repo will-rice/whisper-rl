@@ -5,8 +5,31 @@ from whisper_rl.cards import (
     fetch_validation_rows,
     language_table,
     model_index,
+    qualify_repo_id,
     select_best,
 )
+
+
+class _StubApi:
+    """Minimal HfApi stand-in exposing the authenticated user's name."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def whoami(self) -> dict[str, str]:
+        return {"name": self.name}
+
+
+def test_qualify_repo_id_adds_namespace_to_bare_name() -> None:
+    """A bare experiment name is qualified with the authenticated user."""
+    got = qualify_repo_id("whisper-tiny-grpo-abc", _StubApi("wrice"))  # ty: ignore[invalid-argument-type]
+    assert got == "wrice/whisper-tiny-grpo-abc"
+
+
+def test_qualify_repo_id_leaves_namespaced_id_untouched() -> None:
+    """An already-namespaced id passes through without a whoami lookup."""
+    got = qualify_repo_id("wrice/model", _StubApi("other"))  # ty: ignore[invalid-argument-type]
+    assert got == "wrice/model"
 
 
 def test_dataset_label_strips_local_index_path() -> None:
