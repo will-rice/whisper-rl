@@ -59,12 +59,20 @@ keyed the same way as `batch.languages`, so no new metric plumbing is needed.
 
 ## Cold start
 
-An empty / missing entry defaults to CER `≥ c_ref`, i.e. weight `cap = 1.0`. So:
+A language with **no** validation CER yet gets weight `0` — no SFT until its
+error proves it needs teaching. So:
 
-- Before the first validation (steps 0 to ~250), every clip gets full SFT — the
-  same bootstrap as `sft_weight = 1.0`.
-- A language absent from a given eval slice keeps its last smoothed CER (or the
-  default if never seen), never silently dropping to the floor.
+- Before the first validation (steps 0 to ~250), every clip's weight is `0`: the
+  run is pure GRPO for that warmup, and the strong languages take no SFT hit at
+  the very start (exactly where en degrades fastest).
+- At the first validation the CER map is **seeded with the observed CER** (not
+  ramped from zero via the EMA), so each language's weight jumps straight to its
+  correct ramp value — floored languages are not starved waiting for an EMA to
+  climb. Subsequent validations EMA-update.
+- The fixed 256-clip eval covers every language (the dead run reported all ~77),
+  so after the first validation no language stays at `0`; a measured language's
+  weight is bounded below by the ramp floor (`0.1`). A weight of `0` therefore
+  means only "not yet measured", never "measured and protected".
 
 ## Loss plumbing
 
@@ -124,11 +132,13 @@ the user's rogii-2026 project).
 
 - `weighted_sft_loss`: uniform weights reduce to the plain per-clip mean; a
   zero-weight clip contributes nothing; a higher-weight clip contributes
-  proportionally more.
-- CER → weight ramp: `clamp` bounds at floor and cap; the cold-start default
-  (missing language) yields the cap.
-- EMA update: first sight seeds the value; subsequent updates move it by
-  `(1 - ema)` toward the new CER.
+  proportionally more; an all-zero weight vector yields `0` (pure-GRPO warmup).
+- CER → weight ramp: `clamp` bounds at floor and cap; an **unmeasured** language
+  yields weight `0`; a measured language yields the ramp value, never below the
+  floor.
+- EMA update: the first observed CER seeds the value exactly (weight is correct
+  from the first validation); subsequent updates move it by `(1 - ema)` toward
+  the new CER.
 
 ## Risks / open points
 
