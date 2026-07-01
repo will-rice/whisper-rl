@@ -77,6 +77,86 @@ def sft_loss(
     return -(log_probs * mask).sum() / token_count
 
 
+def weighted_sft_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    mask: torch.Tensor,
+    weights: torch.Tensor,
+) -> torch.Tensor:
+    """Per-clip-weighted masked SFT loss.
+
+    Each clip's token-averaged negative log-likelihood is scaled by its weight
+    and averaged over the batch, so a batch of low-weight (protected) clips
+    contributes proportionally little SFT gradient.
+
+    Args:
+        logits: Decoder logits of shape ``(batch, seq_len, vocab)``.
+        targets: Reference token ids of shape ``(batch, seq_len)``.
+        mask: ``1`` on supervised reference tokens, ``0`` elsewhere,
+            shape ``(batch, seq_len)``.
+        weights: Per-clip SFT weight of shape ``(batch,)``.
+
+    Returns:
+        Scalar ``mean_i(weights_i * nll_i)``.
+    """
+    log_probs = sequence_log_probs(logits, targets)
+    mask = mask.to(log_probs.dtype)
+    per_clip_nll = -(log_probs * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+    return (weights.to(per_clip_nll.dtype) * per_clip_nll).mean()
+
+
+def sft_weights_for(
+    languages: list[str],
+    cer_map: dict[str, float],
+    cer_ref: float,
+    floor: float,
+    cap: float,
+) -> list[float]:
+    """Per-clip SFT weights from smoothed per-language CER.
+
+    A language with a measured CER gets ``clamp(cer / cer_ref, floor, cap)`` — a
+    scaled ramp that is full at ``cer_ref`` error and falls to the floor as the
+    language improves. A language not yet measured gets ``0`` (no SFT until its
+    error is known), which is below the floor and so distinguishable from a
+    measured-and-protected language.
+
+    Args:
+        languages: Per-clip language codes (unrepeated batch order).
+        cer_map: Smoothed CER per language.
+        cer_ref: CER at or above which a language gets the full ``cap``.
+        floor: Minimum weight for a measured language.
+        cap: Maximum weight.
+
+    Returns:
+        One weight per entry in ``languages``.
+    """
+    return [
+        min(cap, max(floor, cer_map[lang] / cer_ref)) if lang in cer_map else 0.0
+        for lang in languages
+    ]
+
+
+def ema_update(
+    cer_map: dict[str, float], new_cer: dict[str, float], ema: float
+) -> None:
+    """Exponential-moving-average update of the per-language CER map, in place.
+
+    A language seen for the first time is stored exactly (so its SFT weight is
+    correct from its first validation); a language already present is blended
+    ``ema * old + (1 - ema) * new`` to damp the per-validation noise of a small
+    per-language eval slice.
+
+    Args:
+        cer_map: The map to update in place.
+        new_cer: Freshly measured CER per language (exclude the ``overall`` key).
+        ema: Weight on the existing value in ``[0, 1)``.
+    """
+    for lang, cer in new_cer.items():
+        cer_map[lang] = (
+            ema * cer_map[lang] + (1 - ema) * cer if lang in cer_map else cer
+        )
+
+
 def sft_weight_at(
     step: int, start: float, final: float, anneal_start: int, anneal_end: int
 ) -> float:

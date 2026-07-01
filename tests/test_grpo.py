@@ -4,12 +4,15 @@ import torch
 
 from whisper_rl.grpo import (
     completion_mask_from_ids,
+    ema_update,
     group_advantages,
     grpo_loss,
     kl_divergence,
     sequence_log_probs,
     sft_loss,
     sft_weight_at,
+    sft_weights_for,
+    weighted_sft_loss,
 )
 
 
@@ -140,3 +143,63 @@ def test_sft_loss_is_positive_and_differentiable() -> None:
     assert torch.allclose(loss, torch.tensor(4.0).log())  # -log(1/4) per token
     loss.backward()
     assert logits.grad is not None
+
+
+def test_weighted_sft_loss_uniform_weights_is_per_clip_mean() -> None:
+    """Uniform weights reduce to the mean of per-clip token-averaged NLL."""
+    torch.manual_seed(0)
+    logits = torch.randn(2, 3, 5)
+    targets = torch.randint(0, 5, (2, 3))
+    mask = torch.tensor([[1.0, 1.0, 0.0], [1.0, 1.0, 1.0]])
+    lp = torch.log_softmax(logits, -1).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    per_clip = -(lp * mask).sum(dim=1) / mask.sum(dim=1)
+    got = weighted_sft_loss(logits, targets, mask, torch.tensor([1.0, 1.0]))
+    assert torch.allclose(got, per_clip.mean())
+
+
+def test_weighted_sft_loss_zero_weight_drops_clip() -> None:
+    """A zero-weight clip contributes nothing but still counts in the mean."""
+    torch.manual_seed(1)
+    logits = torch.randn(2, 3, 5)
+    targets = torch.randint(0, 5, (2, 3))
+    mask = torch.ones(2, 3)
+    lp = torch.log_softmax(logits, -1).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    per_clip = -(lp * mask).sum(dim=1) / mask.sum(dim=1)
+    got = weighted_sft_loss(logits, targets, mask, torch.tensor([1.0, 0.0]))
+    assert torch.allclose(got, per_clip[0] / 2)
+
+
+def test_weighted_sft_loss_all_zero_is_zero() -> None:
+    """An all-zero weight vector yields zero SFT (pure-GRPO warmup)."""
+    logits = torch.randn(2, 3, 5)
+    targets = torch.randint(0, 5, (2, 3))
+    got = weighted_sft_loss(logits, targets, torch.ones(2, 3), torch.zeros(2))
+    assert got == 0.0
+
+
+def test_sft_weights_for_ramps_and_clamps() -> None:
+    """Measured languages map to clamp(cer/cer_ref, floor, cap)."""
+    cer_map = {"hi": 0.8, "de": 0.02, "mr": 0.2}
+    w = sft_weights_for(["hi", "de", "mr"], cer_map, 0.4, 0.1, 1.0)
+    assert w[0] == 1.0  # 0.8/0.4 = 2.0 -> cap
+    assert w[1] == 0.1  # 0.02/0.4 = 0.05 -> floor 0.1
+    assert abs(w[2] - 0.5) < 1e-9  # 0.2/0.4 = 0.5
+
+
+def test_sft_weights_for_unmeasured_language_is_zero() -> None:
+    """A language absent from the map gets no SFT yet."""
+    assert sft_weights_for(["ja"], {}, 0.4, 0.1, 1.0) == [0.0]
+
+
+def test_ema_update_seeds_on_first_sight() -> None:
+    """The first observed CER is stored exactly (no ramp from zero)."""
+    cer_map: dict[str, float] = {}
+    ema_update(cer_map, {"hi": 0.6}, 0.7)
+    assert cer_map["hi"] == 0.6
+
+
+def test_ema_update_blends_existing() -> None:
+    """A subsequent CER moves the value by (1 - ema) toward the new value."""
+    cer_map = {"hi": 0.6}
+    ema_update(cer_map, {"hi": 0.4}, 0.7)
+    assert abs(cer_map["hi"] - (0.7 * 0.6 + 0.3 * 0.4)) < 1e-9
