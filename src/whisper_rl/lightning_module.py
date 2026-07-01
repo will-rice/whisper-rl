@@ -9,11 +9,14 @@ from whisper_rl.config import Config
 from whisper_rl.datasets import Batch
 from whisper_rl.grpo import (
     completion_mask_from_ids,
+    ema_update,
     group_advantages,
     grpo_loss,
     sequence_log_probs,
     sft_loss,
     sft_weight_at,
+    sft_weights_for,
+    weighted_sft_loss,
 )
 from whisper_rl.metrics import LanguageErrorRate
 from whisper_rl.modeling import (
@@ -50,6 +53,7 @@ class WhisperGRPOModule(LightningModule):
         eos = self.policy.config.eos_token_id
         self.eos_token_id = int(eos)  # ty: ignore[invalid-argument-type]
         self.val_metric = LanguageErrorRate()
+        self.sft_cer: dict[str, float] = {}
 
     def _generate(
         self, input_features: torch.Tensor, prompt: torch.Tensor, sample: bool
@@ -126,6 +130,7 @@ class WhisperGRPOModule(LightningModule):
         input_features: torch.Tensor,
         prompt: torch.Tensor,
         references: list[str],
+        weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Supervised cross-entropy toward the reference transcripts.
 
@@ -138,6 +143,8 @@ class WhisperGRPOModule(LightningModule):
             input_features: Encoder features of shape ``(batch, n_mels, frames)``.
             prompt: Pinned decoder prompt ids of shape ``(batch, prompt_len)``.
             references: Ground-truth transcript per clip.
+            weights: Optional per-clip weight of shape ``(batch,)``. When given,
+                the loss is the weighted-mean SFT loss instead of the plain mean.
 
         Returns:
             The scalar supervised loss.
@@ -166,6 +173,8 @@ class WhisperGRPOModule(LightningModule):
         ).logits
         prompt_pad = torch.zeros((len(rows), prompt.size(1) - 1), device=self.device)
         mask = torch.cat([prompt_pad, ref_mask], dim=1)
+        if weights is not None:
+            return weighted_sft_loss(logits, sequences[:, 1:], mask, weights)
         return sft_loss(logits, sequences[:, 1:], mask)
 
     def training_step(self, batch: Batch, batch_idx: int) -> torch.Tensor:
@@ -213,15 +222,34 @@ class WhisperGRPOModule(LightningModule):
             clip_eps=self.config.clip_eps,
             kl_beta=self.config.kl_beta,
         )
-        supervised = self._sft_loss(batch.input_features, base_prompt, batch.references)
-        sft_weight = sft_weight_at(
-            self.global_step,
-            self.config.sft_weight,
-            self.config.sft_weight_final,
-            self.config.sft_anneal_start,
-            self.config.sft_anneal_end,
-        )
-        loss = policy_loss + sft_weight * supervised
+        if self.config.sft_adaptive:
+            weights = torch.tensor(
+                sft_weights_for(
+                    batch.languages,
+                    self.sft_cer,
+                    self.config.sft_cer_ref,
+                    self.config.sft_weight_final,
+                    self.config.sft_weight,
+                ),
+                device=self.device,
+            )
+            supervised = self._sft_loss(
+                batch.input_features, base_prompt, batch.references, weights=weights
+            )
+            sft_weight = weights.mean()
+            loss = policy_loss + supervised
+        else:
+            supervised = self._sft_loss(
+                batch.input_features, base_prompt, batch.references
+            )
+            sft_weight = sft_weight_at(
+                self.global_step,
+                self.config.sft_weight,
+                self.config.sft_weight_final,
+                self.config.sft_anneal_start,
+                self.config.sft_anneal_end,
+            )
+            loss = policy_loss + sft_weight * supervised
 
         batch_size = batch.input_features.size(0)
         self.log("train/loss", loss, prog_bar=True, batch_size=batch_size)
@@ -276,6 +304,16 @@ class WhisperGRPOModule(LightningModule):
             reward = sum(self.val_rewards) / len(self.val_rewards)
             self.log("val/reward", reward, prog_bar=True, sync_dist=True)
         results = self.val_metric.compute()
+        if self.config.sft_adaptive and not self.trainer.sanity_checking:
+            ema_update(
+                self.sft_cer,
+                {
+                    lang: cer
+                    for lang, cer in results["cer"].items()
+                    if lang != "overall"
+                },
+                self.config.sft_cer_ema,
+            )
         for metric, per_language in results.items():
             for language, rate in per_language.items():
                 name = (

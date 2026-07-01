@@ -81,6 +81,13 @@ class Config(BaseModel):
     sft_weight_final: float = 0.1
     sft_anneal_start: int = 6000
     sft_anneal_end: int = 12000
+    # Per-language adaptive SFT: when true, each clip's SFT term is weighted by
+    # clamp(cer / sft_cer_ref, sft_weight_final, sft_weight) using its language's
+    # EMA-smoothed validation CER (unmeasured languages get 0). Replaces the
+    # step-based anneal above.
+    sft_adaptive: bool = False
+    sft_cer_ref: float = 0.4
+    sft_cer_ema: float = 0.7
 
     # Training. The streamed train dataset has no length, so the run is bound
     # solely by ``max_steps`` (epochs are disabled in the trainer); validation
