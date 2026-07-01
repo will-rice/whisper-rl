@@ -13,21 +13,21 @@ from whisper_rl.grpo import (
 )
 
 
-def test_sft_weight_at_endpoints_and_midpoint() -> None:
-    """Linear decay hits start at step 0, final at anneal_steps, midpoint between."""
-    assert sft_weight_at(0, 1.0, 0.1, 20000) == 1.0
-    assert sft_weight_at(20000, 1.0, 0.1, 20000) == 0.1
-    assert abs(sft_weight_at(10000, 1.0, 0.1, 20000) - 0.55) < 1e-9
+def test_sft_weight_at_holds_start_through_anneal_start() -> None:
+    """The weight stays at start until the hold ends."""
+    assert sft_weight_at(0, 1.0, 0.1, 6000, 12000) == 1.0
+    assert sft_weight_at(6000, 1.0, 0.1, 6000, 12000) == 1.0
 
 
-def test_sft_weight_at_holds_final_after_anneal() -> None:
-    """Past the anneal horizon the weight stays at the floor."""
-    assert sft_weight_at(50000, 1.0, 0.1, 20000) == 0.1
+def test_sft_weight_at_decays_linearly_in_window() -> None:
+    """Between anneal_start and anneal_end the weight interpolates linearly."""
+    assert abs(sft_weight_at(9000, 1.0, 0.1, 6000, 12000) - 0.55) < 1e-9
 
 
-def test_sft_weight_at_zero_anneal_is_immediately_final() -> None:
-    """A non-positive horizon applies the final weight from step 0."""
-    assert sft_weight_at(0, 1.0, 0.1, 0) == 0.1
+def test_sft_weight_at_holds_final_after_anneal_end() -> None:
+    """At and past anneal_end the weight stays at the floor."""
+    assert sft_weight_at(12000, 1.0, 0.1, 6000, 12000) == 0.1
+    assert sft_weight_at(50000, 1.0, 0.1, 6000, 12000) == 0.1
 
 
 def test_group_advantages_are_zero_mean_per_group() -> None:
