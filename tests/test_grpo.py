@@ -9,7 +9,25 @@ from whisper_rl.grpo import (
     kl_divergence,
     sequence_log_probs,
     sft_loss,
+    sft_weight_at,
 )
+
+
+def test_sft_weight_at_endpoints_and_midpoint() -> None:
+    """Linear decay hits start at step 0, final at anneal_steps, midpoint between."""
+    assert sft_weight_at(0, 1.0, 0.1, 20000) == 1.0
+    assert sft_weight_at(20000, 1.0, 0.1, 20000) == 0.1
+    assert abs(sft_weight_at(10000, 1.0, 0.1, 20000) - 0.55) < 1e-9
+
+
+def test_sft_weight_at_holds_final_after_anneal() -> None:
+    """Past the anneal horizon the weight stays at the floor."""
+    assert sft_weight_at(50000, 1.0, 0.1, 20000) == 0.1
+
+
+def test_sft_weight_at_zero_anneal_is_immediately_final() -> None:
+    """A non-positive horizon applies the final weight from step 0."""
+    assert sft_weight_at(0, 1.0, 0.1, 0) == 0.1
 
 
 def test_group_advantages_are_zero_mean_per_group() -> None:

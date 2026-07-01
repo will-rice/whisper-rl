@@ -13,6 +13,7 @@ from whisper_rl.grpo import (
     grpo_loss,
     sequence_log_probs,
     sft_loss,
+    sft_weight_at,
 )
 from whisper_rl.metrics import LanguageErrorRate
 from whisper_rl.modeling import (
@@ -213,12 +214,19 @@ class WhisperGRPOModule(LightningModule):
             kl_beta=self.config.kl_beta,
         )
         supervised = self._sft_loss(batch.input_features, base_prompt, batch.references)
-        loss = policy_loss + self.config.sft_weight * supervised
+        sft_weight = sft_weight_at(
+            self.global_step,
+            self.config.sft_weight,
+            self.config.sft_weight_final,
+            self.config.sft_anneal_steps,
+        )
+        loss = policy_loss + sft_weight * supervised
 
         batch_size = batch.input_features.size(0)
         self.log("train/loss", loss, prog_bar=True, batch_size=batch_size)
         self.log("train/grpo_loss", policy_loss, batch_size=batch_size)
         self.log("train/sft_loss", supervised, prog_bar=True, batch_size=batch_size)
+        self.log("train/sft_weight", sft_weight, batch_size=batch_size)
         self.log("train/reward", rewards.mean(), prog_bar=True, batch_size=batch_size)
         self.log("train/kl", mean_kl, batch_size=batch_size)
         self.log(
