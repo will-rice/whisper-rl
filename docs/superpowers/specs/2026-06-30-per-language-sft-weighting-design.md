@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-30
 **Goal:** Push overall CV22 validation error below the hybrid GRPO+SFT plateau by
-weighting each clip's SFT term by how much *its language* still needs teaching —
+weighting each clip's SFT term by how much _its language_ still needs teaching —
 protecting the languages the base model is already strong at while keeping full
 teaching on the ones that are still floored.
 
@@ -16,7 +16,7 @@ all languages at once. The dead run's per-language curves show:
   ~8k). SFT toward CV references hurts most exactly where the base is best.
 - The **floored** languages need full SFT and keep improving through ~8k (hi, ml,
   bn, te), and several plateau high (te ~0.61, ml ~0.47, bn ~0.40) — they would
-  benefit from SFT *past* where a global schedule backs it off.
+  benefit from SFT _past_ where a global schedule backs it off.
 
 A single global `sft_weight(step)` is one clock for languages that want opposite
 things at the same step. Weighting per language dissolves the conflict: strong
@@ -99,7 +99,7 @@ builds the logits/targets/mask exactly as today, then returns
   weights already carry the magnitude), and log `train/sft_weight` as the batch
   mean weight.
 - **not adaptive (default):** unchanged — `sft_weight_at(step, ...) *
-  self._sft_loss(...)` with no weights. The anneal baseline path stays
+self._sft_loss(...)` with no weights. The anneal baseline path stays
   byte-identical, so `cv22sftanneal2` remains reproducible.
 
 ## Config (new fields)
@@ -125,7 +125,7 @@ the user's rogii-2026 project).
 - **Baselines:** dead run `cv22tinysft3` (static SFT, val/cer 0.284 plateau) and
   `cv22sftanneal2` (hold-6k→floor-12k global anneal).
 - **Primary metric:** overall `val/cer`. Read at ~20k and ~40k.
-- **Diagnostic checks:** en/de/pt should *not* degrade (protected from step 0);
+- **Diagnostic checks:** en/de/pt should _not_ degrade (protected from step 0);
   te/ml/bn should keep improving past 12k (they retain SFT while still high-CER).
 
 ## Testing

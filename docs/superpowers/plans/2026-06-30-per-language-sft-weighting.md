@@ -24,10 +24,12 @@
 ### Task 1: `weighted_sft_loss` in grpo.py
 
 **Files:**
+
 - Modify: `src/whisper_rl/grpo.py`
 - Test: `tests/test_grpo.py`
 
 **Interfaces:**
+
 - Consumes: `sequence_log_probs` (already in `grpo.py`).
 - Produces: `weighted_sft_loss(logits: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor, weights: torch.Tensor) -> torch.Tensor` — scalar; `mean_i(weights_i * per_clip_nll_i)`.
 
@@ -123,10 +125,12 @@ git commit -m "Add per-clip weighted SFT loss"
 ### Task 2: `sft_weights_for` in grpo.py
 
 **Files:**
+
 - Modify: `src/whisper_rl/grpo.py`
 - Test: `tests/test_grpo.py`
 
 **Interfaces:**
+
 - Produces: `sft_weights_for(languages: list[str], cer_map: dict[str, float], cer_ref: float, floor: float, cap: float) -> list[float]` — one weight per language; measured language → `clamp(cer/cer_ref, floor, cap)`, unmeasured → `0.0`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -206,10 +210,12 @@ git commit -m "Add per-language SFT weight ramp with zero cold-start"
 ### Task 3: `ema_update` in grpo.py
 
 **Files:**
+
 - Modify: `src/whisper_rl/grpo.py`
 - Test: `tests/test_grpo.py`
 
 **Interfaces:**
+
 - Produces: `ema_update(cer_map: dict[str, float], new_cer: dict[str, float], ema: float) -> None` — mutates `cer_map` in place; seeds unseen languages with the observed CER, EMA-blends seen ones.
 
 - [ ] **Step 1: Write the failing tests**
@@ -275,10 +281,12 @@ git commit -m "Add EMA update for per-language CER map"
 ### Task 4: Config fields and lightning_module wiring
 
 **Files:**
+
 - Modify: `src/whisper_rl/config.py`
 - Modify: `src/whisper_rl/lightning_module.py`
 
 **Interfaces:**
+
 - Consumes: `weighted_sft_loss`, `sft_weights_for`, `ema_update` (Tasks 1–3).
 - Produces: an `sft_adaptive` training path; `self.sft_cer: dict[str, float]` on the module.
 
@@ -429,9 +437,11 @@ git commit -m "Wire adaptive per-language SFT weighting into training"
 ### Task 5: Smoke test, PR, and launch the experiment
 
 **Files:**
+
 - None (operational; runs on `green`).
 
 **Interfaces:**
+
 - Consumes: the merged feature.
 - Produces: the `cv22sftadaptive` run.
 
