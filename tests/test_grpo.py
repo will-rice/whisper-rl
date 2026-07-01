@@ -4,6 +4,7 @@ import torch
 
 from whisper_rl.grpo import (
     completion_mask_from_ids,
+    ema_update,
     group_advantages,
     grpo_loss,
     kl_divergence,
@@ -188,3 +189,17 @@ def test_sft_weights_for_ramps_and_clamps() -> None:
 def test_sft_weights_for_unmeasured_language_is_zero() -> None:
     """A language absent from the map gets no SFT yet."""
     assert sft_weights_for(["ja"], {}, 0.4, 0.1, 1.0) == [0.0]
+
+
+def test_ema_update_seeds_on_first_sight() -> None:
+    """The first observed CER is stored exactly (no ramp from zero)."""
+    cer_map: dict[str, float] = {}
+    ema_update(cer_map, {"hi": 0.6}, 0.7)
+    assert cer_map["hi"] == 0.6
+
+
+def test_ema_update_blends_existing() -> None:
+    """A subsequent CER moves the value by (1 - ema) toward the new value."""
+    cer_map = {"hi": 0.6}
+    ema_update(cer_map, {"hi": 0.4}, 0.7)
+    assert abs(cer_map["hi"] - (0.7 * 0.6 + 0.3 * 0.4)) < 1e-9

@@ -136,6 +136,27 @@ def sft_weights_for(
     ]
 
 
+def ema_update(
+    cer_map: dict[str, float], new_cer: dict[str, float], ema: float
+) -> None:
+    """Exponential-moving-average update of the per-language CER map, in place.
+
+    A language seen for the first time is stored exactly (so its SFT weight is
+    correct from its first validation); a language already present is blended
+    ``ema * old + (1 - ema) * new`` to damp the per-validation noise of a small
+    per-language eval slice.
+
+    Args:
+        cer_map: The map to update in place.
+        new_cer: Freshly measured CER per language (exclude the ``overall`` key).
+        ema: Weight on the existing value in ``[0, 1)``.
+    """
+    for lang, cer in new_cer.items():
+        cer_map[lang] = (
+            ema * cer_map[lang] + (1 - ema) * cer if lang in cer_map else cer
+        )
+
+
 def sft_weight_at(
     step: int, start: float, final: float, anneal_start: int, anneal_end: int
 ) -> float:
