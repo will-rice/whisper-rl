@@ -77,26 +77,32 @@ def sft_loss(
     return -(log_probs * mask).sum() / token_count
 
 
-def sft_weight_at(step: int, start: float, final: float, anneal_steps: int) -> float:
-    """Linearly annealed weight of the SFT term at a training step.
+def sft_weight_at(
+    step: int, start: float, final: float, anneal_start: int, anneal_end: int
+) -> float:
+    """Weight of the SFT term at a training step: hold, then linearly decay.
 
     The supervised term teaches languages the policy never samples correctly, so
     it is most useful early (to bootstrap them) but over-corrects a strong base
-    model late. Decay it linearly from ``start`` at step 0 to ``final`` at
-    ``anneal_steps``, then hold ``final``.
+    model late. Hold ``start`` through ``anneal_start`` (full teaching while the
+    floored languages are still learning), decay linearly to ``final`` by
+    ``anneal_end`` (before the strong languages degrade), then hold ``final``.
 
     Args:
         step: Current global optimizer step.
-        start: SFT weight at step 0.
-        final: SFT weight at and after ``anneal_steps``.
-        anneal_steps: Steps over which to decay; ``<= 0`` uses ``final`` at once.
+        start: SFT weight up to ``anneal_start``.
+        final: SFT weight at and after ``anneal_end``.
+        anneal_start: Last step of the full-weight hold.
+        anneal_end: Step at which the weight reaches ``final`` (> ``anneal_start``).
 
     Returns:
         The SFT weight to apply at ``step``.
     """
-    if anneal_steps <= 0 or step >= anneal_steps:
+    if step <= anneal_start:
+        return start
+    if step >= anneal_end:
         return final
-    return start + (final - start) * (step / anneal_steps)
+    return start + (final - start) * (step - anneal_start) / (anneal_end - anneal_start)
 
 
 def kl_divergence(

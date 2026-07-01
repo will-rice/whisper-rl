@@ -218,7 +218,8 @@ class WhisperGRPOModule(LightningModule):
             self.global_step,
             self.config.sft_weight,
             self.config.sft_weight_final,
-            self.config.sft_anneal_steps,
+            self.config.sft_anneal_start,
+            self.config.sft_anneal_end,
         )
         loss = policy_loss + sft_weight * supervised
 

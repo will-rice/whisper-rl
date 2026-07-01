@@ -71,13 +71,16 @@ class Config(BaseModel):
     # Weight of the supervised cross-entropy term added to the GRPO loss. This
     # is a direct teaching signal toward the reference, so it can move languages
     # the policy never samples correctly (where GRPO alone has no gradient).
-    # ``0`` disables it (pure GRPO). ``sft_weight`` is the value at step 0; it
-    # anneals linearly to ``sft_weight_final`` over ``sft_anneal_steps`` steps,
-    # then holds. Heavy SFT bootstraps low-resource languages early but
-    # over-corrects a strong base model late, so decay it toward a small floor.
+    # ``0`` disables it (pure GRPO). Heavy SFT bootstraps low-resource languages
+    # early but over-corrects a strong base model late (on CV22, the languages
+    # Whisper is strongest at — en/de/pt — degrade past ~8k). So hold
+    # ``sft_weight`` through ``sft_anneal_start`` (full teaching while the
+    # floored languages are still learning), decay linearly to
+    # ``sft_weight_final`` by ``sft_anneal_end``, then hold the floor.
     sft_weight: float = 1.0
     sft_weight_final: float = 0.1
-    sft_anneal_steps: int = 20000
+    sft_anneal_start: int = 6000
+    sft_anneal_end: int = 12000
 
     # Training. The streamed train dataset has no length, so the run is bound
     # solely by ``max_steps`` (epochs are disabled in the trainer); validation
