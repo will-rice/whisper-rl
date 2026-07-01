@@ -59,20 +59,24 @@ keyed the same way as `batch.languages`, so no new metric plumbing is needed.
 
 ## Cold start
 
-A language with **no** validation CER yet gets weight `0` — no SFT until its
-error proves it needs teaching. So:
+A language with **no** validation CER yet defaults to the full weight `cap`
+(1.0) — assume it needs teaching until its error is measured. So:
 
-- Before the first validation (steps 0 to ~250), every clip's weight is `0`: the
-  run is pure GRPO for that warmup, and the strong languages take no SFT hit at
-  the very start (exactly where en degrades fastest).
+- Before the first validation (steps 0 to ~250), every clip gets full SFT, the
+  same bootstrap as the static hybrid. The per-language curves show the strong
+  languages (en best at ~1k) do not degrade in this short window, so the warmup
+  costs them nothing meaningful while the floored languages start learning at
+  once.
 - At the first validation the CER map is **seeded with the observed CER** (not
   ramped from zero via the EMA), so each language's weight jumps straight to its
-  correct ramp value — floored languages are not starved waiting for an EMA to
-  climb. Subsequent validations EMA-update.
-- The fixed 256-clip eval covers every language (the dead run reported all ~77),
-  so after the first validation no language stays at `0`; a measured language's
-  weight is bounded below by the ramp floor (`0.1`). A weight of `0` therefore
-  means only "not yet measured", never "measured and protected".
+  correct ramp value — strong languages drop toward the floor, floored languages
+  stay near the cap. Subsequent validations EMA-update.
+- A language **absent from the eval slice** keeps the default full weight
+  indefinitely — which teaches an otherwise-never-taught language (e.g. Sindhi,
+  which CV22 ships with no dev split). The flip side: a _strong_ language absent
+  from eval would keep full SFT and could over-correct, so the eval set should
+  cover every training language (holds while `max_eval_samples >= num languages`;
+  currently 78 of 79 CV22 languages have a validation split).
 
 ## Loss plumbing
 
@@ -125,17 +129,18 @@ the user's rogii-2026 project).
 - **Baselines:** dead run `cv22tinysft3` (static SFT, val/cer 0.284 plateau) and
   `cv22sftanneal2` (hold-6k→floor-12k global anneal).
 - **Primary metric:** overall `val/cer`. Read at ~20k and ~40k.
-- **Diagnostic checks:** en/de/pt should _not_ degrade (protected from step 0);
-  te/ml/bn should keep improving past 12k (they retain SFT while still high-CER).
+- **Diagnostic checks:** en/de/pt should _not_ degrade (protected from the first
+  validation, where their low CER drops them toward the floor); te/ml/bn should
+  keep improving past 12k (they retain SFT while still high-CER).
 
 ## Testing
 
 - `weighted_sft_loss`: uniform weights reduce to the plain per-clip mean; a
   zero-weight clip contributes nothing; a higher-weight clip contributes
-  proportionally more; an all-zero weight vector yields `0` (pure-GRPO warmup).
+  proportionally more; an all-zero weight vector yields `0`.
 - CER → weight ramp: `clamp` bounds at floor and cap; an **unmeasured** language
-  yields weight `0`; a measured language yields the ramp value, never below the
-  floor.
+  defaults to the full `cap`; a measured language yields the ramp value, never
+  below the floor.
 - EMA update: the first observed CER seeds the value exactly (weight is correct
   from the first validation); subsequent updates move it by `(1 - ema)` toward
   the new CER.

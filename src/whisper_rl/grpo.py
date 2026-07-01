@@ -116,22 +116,23 @@ def sft_weights_for(
 
     A language with a measured CER gets ``clamp(cer / cer_ref, floor, cap)`` — a
     scaled ramp that is full at ``cer_ref`` error and falls to the floor as the
-    language improves. A language not yet measured gets ``0`` (no SFT until its
-    error is known), which is below the floor and so distinguishable from a
-    measured-and-protected language.
+    language improves. A language not yet measured defaults to the full ``cap``:
+    assume it needs teaching until its error is measured. This teaches languages
+    during the pre-first-validation warmup and any language absent from the eval
+    slice (which would otherwise never be taught).
 
     Args:
         languages: Per-clip language codes (unrepeated batch order).
         cer_map: Smoothed CER per language.
         cer_ref: CER at or above which a language gets the full ``cap``.
         floor: Minimum weight for a measured language.
-        cap: Maximum weight.
+        cap: Maximum weight, and the default for a not-yet-measured language.
 
     Returns:
         One weight per entry in ``languages``.
     """
     return [
-        min(cap, max(floor, cer_map[lang] / cer_ref)) if lang in cer_map else 0.0
+        min(cap, max(floor, cer_map[lang] / cer_ref)) if lang in cer_map else cap
         for lang in languages
     ]
 
