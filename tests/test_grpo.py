@@ -10,6 +10,7 @@ from whisper_rl.grpo import (
     sequence_log_probs,
     sft_loss,
     sft_weight_at,
+    sft_weights_for,
     weighted_sft_loss,
 )
 
@@ -173,3 +174,17 @@ def test_weighted_sft_loss_all_zero_is_zero() -> None:
     targets = torch.randint(0, 5, (2, 3))
     got = weighted_sft_loss(logits, targets, torch.ones(2, 3), torch.zeros(2))
     assert got == 0.0
+
+
+def test_sft_weights_for_ramps_and_clamps() -> None:
+    """Measured languages map to clamp(cer/cer_ref, floor, cap)."""
+    cer_map = {"hi": 0.8, "de": 0.04, "mr": 0.2}
+    w = sft_weights_for(["hi", "de", "mr"], cer_map, 0.4, 0.1, 1.0)
+    assert w[0] == 1.0  # 0.8/0.4 = 2.0 -> cap
+    assert w[1] == 0.1  # 0.04/0.4 = 0.1 -> floor
+    assert abs(w[2] - 0.5) < 1e-9  # 0.2/0.4 = 0.5
+
+
+def test_sft_weights_for_unmeasured_language_is_zero() -> None:
+    """A language absent from the map gets no SFT yet."""
+    assert sft_weights_for(["ja"], {}, 0.4, 0.1, 1.0) == [0.0]

@@ -105,6 +105,37 @@ def weighted_sft_loss(
     return (weights.to(per_clip_nll.dtype) * per_clip_nll).mean()
 
 
+def sft_weights_for(
+    languages: list[str],
+    cer_map: dict[str, float],
+    cer_ref: float,
+    floor: float,
+    cap: float,
+) -> list[float]:
+    """Per-clip SFT weights from smoothed per-language CER.
+
+    A language with a measured CER gets ``clamp(cer / cer_ref, floor, cap)`` — a
+    scaled ramp that is full at ``cer_ref`` error and falls to the floor as the
+    language improves. A language not yet measured gets ``0`` (no SFT until its
+    error is known), which is below the floor and so distinguishable from a
+    measured-and-protected language.
+
+    Args:
+        languages: Per-clip language codes (unrepeated batch order).
+        cer_map: Smoothed CER per language.
+        cer_ref: CER at or above which a language gets the full ``cap``.
+        floor: Minimum weight for a measured language.
+        cap: Maximum weight.
+
+    Returns:
+        One weight per entry in ``languages``.
+    """
+    return [
+        min(cap, max(floor, cer_map[lang] / cer_ref)) if lang in cer_map else 0.0
+        for lang in languages
+    ]
+
+
 def sft_weight_at(
     step: int, start: float, final: float, anneal_start: int, anneal_end: int
 ) -> float:
