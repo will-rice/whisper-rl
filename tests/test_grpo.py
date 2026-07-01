@@ -186,9 +186,9 @@ def test_sft_weights_for_ramps_and_clamps() -> None:
     assert abs(w[2] - 0.5) < 1e-9  # 0.2/0.4 = 0.5
 
 
-def test_sft_weights_for_unmeasured_language_is_zero() -> None:
-    """A language absent from the map gets no SFT yet."""
-    assert sft_weights_for(["ja"], {}, 0.4, 0.1, 1.0) == [0.0]
+def test_sft_weights_for_unmeasured_language_defaults_to_cap() -> None:
+    """A language absent from the map defaults to full SFT (the cap)."""
+    assert sft_weights_for(["ja"], {}, 0.4, 0.1, 1.0) == [1.0]
 
 
 def test_ema_update_seeds_on_first_sight() -> None:

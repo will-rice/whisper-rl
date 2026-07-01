@@ -11,11 +11,11 @@
 ## Global Constraints
 
 - Weight function: `weight = clamp(cer / cer_ref, floor, cap)` with `cer_ref = 0.4`, `floor = sft_weight_final = 0.1`, `cap = sft_weight = 1.0`.
-- A language not yet in the CER map gets weight `0` (no SFT until measured).
+- A language not yet in the CER map defaults to the full `cap` (full SFT until measured).
 - EMA-update per-language CER each validation: `sft_cer[lang] = ema*old + (1-ema)*new`, seeded exactly with the first observed CER; `ema = sft_cer_ema = 0.7`.
 - Loss aggregation: `weighted_sft_loss = mean_i(weight_i * per_clip_nll_i)`; `per_clip_nll_i = -(log_probs * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)`.
 - The non-adaptive (anneal) path is unchanged: `loss = policy_loss + sft_weight_at(...) * sft_loss(...)`.
-- Do NOT update the CER map during `trainer.sanity_checking` (keeps the zero-init warmup intact).
+- Do NOT update the CER map during `trainer.sanity_checking` (keeps the map empty through sanity so the full-SFT default holds until the first real validation).
 - New config fields: `sft_adaptive: bool = False`, `sft_cer_ref: float = 0.4`, `sft_cer_ema: float = 0.7`. Reuse `sft_weight` (cap) and `sft_weight_final` (floor).
 - Run pre-commit for every commit: `uv run pre-commit run -a` (ruff, ty, pytest). If it fails with `No module named 'whisper_rl'`, run `uv pip install -e . --quiet` first (editable-install quirk) and rerun.
 
@@ -507,6 +507,6 @@ Then `chmod +x` it and launch:
 ssh green 'chmod +x ~/cv22_sftadaptive_supervisor.sh && tmux new-session -d -s sftadaptive "bash ~/cv22_sftadaptive_supervisor.sh 2>&1 | tee -a /data/cv22_sftadaptive.log"; sleep 5; tmux has-session -t sftadaptive && echo LAUNCHED'
 ```
 
-- [ ] **Step 5: Verify config and the zero-init warmup**
+- [ ] **Step 5: Verify config and the warmup**
 
-After the first validation (~250 steps), check `~/cv22_monitor.py cv22sftadaptive` and confirm in the W&B run config that `sft_adaptive=True`, `sft_cer_ref=0.4`, `sft_cer_ema=0.7`. Confirm `train/sft_weight` starts near 0 (pure-GRPO warmup) and rises after the first validation. Compare overall `val/cer` at 20k/40k against `cv22sftanneal2` and the dead run, and watch en/de/pt (should not degrade) and te/ml/bn (should keep improving).
+After the first validation (~250 steps), check `~/cv22_monitor.py cv22sftadaptive` and confirm in the W&B run config that `sft_adaptive=True`, `sft_cer_ref=0.4`, `sft_cer_ema=0.7`. Confirm `train/sft_weight` starts near 1.0 (full-SFT default before any language is measured) and settles as the strong languages are measured down after the first validation. Compare overall `val/cer` at 20k/40k against `cv22sftanneal2` and the dead run, and watch en/de/pt (should not degrade) and te/ml/bn (should keep improving).
