@@ -53,6 +53,9 @@ class WhisperGRPOModule(LightningModule):
         eos = self.policy.config.eos_token_id
         self.eos_token_id = int(eos)  # ty: ignore[invalid-argument-type]
         self.val_metric = LanguageErrorRate()
+        # A language gets weight 0 (no SFT) until it appears in a validation slice.
+        # This "weight 0 = not yet measured" invariant relies on the eval set covering
+        # every training language, which holds while max_eval_samples >= num_languages.
         self.sft_cer: dict[str, float] = {}
 
     def _generate(

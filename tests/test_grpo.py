@@ -179,10 +179,10 @@ def test_weighted_sft_loss_all_zero_is_zero() -> None:
 
 def test_sft_weights_for_ramps_and_clamps() -> None:
     """Measured languages map to clamp(cer/cer_ref, floor, cap)."""
-    cer_map = {"hi": 0.8, "de": 0.04, "mr": 0.2}
+    cer_map = {"hi": 0.8, "de": 0.02, "mr": 0.2}
     w = sft_weights_for(["hi", "de", "mr"], cer_map, 0.4, 0.1, 1.0)
     assert w[0] == 1.0  # 0.8/0.4 = 2.0 -> cap
-    assert w[1] == 0.1  # 0.04/0.4 = 0.1 -> floor
+    assert w[1] == 0.1  # 0.02/0.4 = 0.05 -> floor 0.1
     assert abs(w[2] - 0.5) < 1e-9  # 0.2/0.4 = 0.5
 
 
