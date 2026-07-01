@@ -10,6 +10,7 @@ from whisper_rl.grpo import (
     sequence_log_probs,
     sft_loss,
     sft_weight_at,
+    weighted_sft_loss,
 )
 
 
@@ -140,3 +141,35 @@ def test_sft_loss_is_positive_and_differentiable() -> None:
     assert torch.allclose(loss, torch.tensor(4.0).log())  # -log(1/4) per token
     loss.backward()
     assert logits.grad is not None
+
+
+def test_weighted_sft_loss_uniform_weights_is_per_clip_mean() -> None:
+    """Uniform weights reduce to the mean of per-clip token-averaged NLL."""
+    torch.manual_seed(0)
+    logits = torch.randn(2, 3, 5)
+    targets = torch.randint(0, 5, (2, 3))
+    mask = torch.tensor([[1.0, 1.0, 0.0], [1.0, 1.0, 1.0]])
+    lp = torch.log_softmax(logits, -1).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    per_clip = -(lp * mask).sum(dim=1) / mask.sum(dim=1)
+    got = weighted_sft_loss(logits, targets, mask, torch.tensor([1.0, 1.0]))
+    assert torch.allclose(got, per_clip.mean())
+
+
+def test_weighted_sft_loss_zero_weight_drops_clip() -> None:
+    """A zero-weight clip contributes nothing but still counts in the mean."""
+    torch.manual_seed(1)
+    logits = torch.randn(2, 3, 5)
+    targets = torch.randint(0, 5, (2, 3))
+    mask = torch.ones(2, 3)
+    lp = torch.log_softmax(logits, -1).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    per_clip = -(lp * mask).sum(dim=1) / mask.sum(dim=1)
+    got = weighted_sft_loss(logits, targets, mask, torch.tensor([1.0, 0.0]))
+    assert torch.allclose(got, per_clip[0] / 2)
+
+
+def test_weighted_sft_loss_all_zero_is_zero() -> None:
+    """An all-zero weight vector yields zero SFT (pure-GRPO warmup)."""
+    logits = torch.randn(2, 3, 5)
+    targets = torch.randint(0, 5, (2, 3))
+    got = weighted_sft_loss(logits, targets, torch.ones(2, 3), torch.zeros(2))
+    assert got == 0.0

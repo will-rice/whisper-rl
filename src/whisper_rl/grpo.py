@@ -77,6 +77,34 @@ def sft_loss(
     return -(log_probs * mask).sum() / token_count
 
 
+def weighted_sft_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    mask: torch.Tensor,
+    weights: torch.Tensor,
+) -> torch.Tensor:
+    """Per-clip-weighted masked SFT loss.
+
+    Each clip's token-averaged negative log-likelihood is scaled by its weight
+    and averaged over the batch, so a batch of low-weight (protected) clips
+    contributes proportionally little SFT gradient.
+
+    Args:
+        logits: Decoder logits of shape ``(batch, seq_len, vocab)``.
+        targets: Reference token ids of shape ``(batch, seq_len)``.
+        mask: ``1`` on supervised reference tokens, ``0`` elsewhere,
+            shape ``(batch, seq_len)``.
+        weights: Per-clip SFT weight of shape ``(batch,)``.
+
+    Returns:
+        Scalar ``mean_i(weights_i * nll_i)``.
+    """
+    log_probs = sequence_log_probs(logits, targets)
+    mask = mask.to(log_probs.dtype)
+    per_clip_nll = -(log_probs * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+    return (weights.to(per_clip_nll.dtype) * per_clip_nll).mean()
+
+
 def sft_weight_at(
     step: int, start: float, final: float, anneal_start: int, anneal_end: int
 ) -> float:
