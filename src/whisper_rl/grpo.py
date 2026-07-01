@@ -77,6 +77,28 @@ def sft_loss(
     return -(log_probs * mask).sum() / token_count
 
 
+def sft_weight_at(step: int, start: float, final: float, anneal_steps: int) -> float:
+    """Linearly annealed weight of the SFT term at a training step.
+
+    The supervised term teaches languages the policy never samples correctly, so
+    it is most useful early (to bootstrap them) but over-corrects a strong base
+    model late. Decay it linearly from ``start`` at step 0 to ``final`` at
+    ``anneal_steps``, then hold ``final``.
+
+    Args:
+        step: Current global optimizer step.
+        start: SFT weight at step 0.
+        final: SFT weight at and after ``anneal_steps``.
+        anneal_steps: Steps over which to decay; ``<= 0`` uses ``final`` at once.
+
+    Returns:
+        The SFT weight to apply at ``step``.
+    """
+    if anneal_steps <= 0 or step >= anneal_steps:
+        return final
+    return start + (final - start) * (step / anneal_steps)
+
+
 def kl_divergence(
     policy_log_probs: torch.Tensor, ref_log_probs: torch.Tensor
 ) -> torch.Tensor:
