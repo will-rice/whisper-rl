@@ -16,6 +16,7 @@ import logging
 from argparse import ArgumentParser
 from pathlib import Path
 
+from dotenv import load_dotenv
 from lightning import Trainer, seed_everything
 
 from whisper_rl.config import Config
@@ -41,6 +42,7 @@ def main() -> None:
     parser.add_argument("--output", default=Path("eval.json"), type=Path)
     parser.add_argument("--num_devices", default=1, type=int)
     args = parser.parse_args()
+    load_dotenv()
 
     results = {model: evaluate(model, args.num_devices) for model in args.models}
     report = {
