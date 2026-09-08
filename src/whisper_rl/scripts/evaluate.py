@@ -9,6 +9,11 @@ difference against ``openai/whisper-tiny`` is measurable rather than asserted.
 The evaluation slice is materialized with ``take`` and never shuffled, so every
 model here sees the same clips in the same order, and decoding is greedy. The
 comparison is therefore exact rather than approximate.
+
+Scoring uses the ``test`` split, not ``validation``: training checkpoints on
+validation reward, so validation numbers would report the split the checkpoint
+was selected on. Materializing the slice costs far more than decoding it, so it
+is built once and shared across every model.
 """
 
 import json
@@ -18,16 +23,42 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from lightning import Trainer, seed_everything
+from transformers import WhisperProcessor
 
 from whisper_rl.config import Config
 from whisper_rl.datasets import SpeechDataModule
 from whisper_rl.lightning_module import WhisperGRPOModule
 from whisper_rl.modeling import build_processor
 
-# Clips pulled from the evaluation split. The slice spans every locale in the
-# dataset, so this divides across all of them -- too small a number leaves
-# single-digit clips per language and per-language rates stop meaning anything.
-EVAL_SAMPLES = 4096
+# Clips pulled from the split. The slice spans every locale in the dataset, so
+# this divides across all of them -- too small a number leaves single-digit
+# clips per language and per-language rates stop meaning anything.
+EVAL_SAMPLES = 2048
+
+# Held out from both training and checkpoint selection, unlike ``validation``.
+EVAL_SPLIT = "test"
+
+# Fixed before any result was seen, so the table cannot be a post-hoc pick of
+# the locales that happened to improve. Four high-resource, three mid, one
+# without word boundaries (ja, where CER rather than WER is the meaningful
+# figure), and four low-resource -- the tier GRPO on error rate should help
+# most, and where Whisper is weakest. Scoring all 50 locales instead would
+# cost 50 sequential stream setups and leave too few clips per language for
+# any single rate to mean anything.
+EVAL_LANGUAGES = [
+    "en",
+    "de",
+    "fr",
+    "es",
+    "pt",
+    "ru",
+    "tr",
+    "ja",
+    "ta",
+    "sw",
+    "cy",
+    "ka",
+]
 
 
 def main() -> None:
@@ -44,13 +75,32 @@ def main() -> None:
     args = parser.parse_args()
     load_dotenv()
 
-    results = {model: evaluate(model, args.num_devices) for model in args.models}
+    baseline = args.models[0]
+    config = Config(
+        base_model=baseline,
+        max_eval_samples=EVAL_SAMPLES,
+        eval_split=EVAL_SPLIT,
+        languages=EVAL_LANGUAGES,
+    )
+    seed_everything(config.seed, workers=True)
+    processor = build_processor(config)
+    datamodule = SpeechDataModule(config, processor)
+    datamodule.setup()
+    assert datamodule.eval_dataset is not None
+    logging.info("Evaluation slice: %d clips", len(datamodule.eval_dataset))
+
+    results = {
+        model: evaluate(model, processor, datamodule, args.num_devices)
+        for model in args.models
+    }
     report = {
-        "baseline": args.models[0],
+        "baseline": baseline,
+        "eval_split": EVAL_SPLIT,
         "eval_samples": EVAL_SAMPLES,
+        "eval_languages": EVAL_LANGUAGES,
         "results": results,
         "deltas": {
-            model: deltas(results[args.models[0]], results[model])
+            model: deltas(results[baseline], results[model])
             for model in args.models[1:]
         },
     }
@@ -59,11 +109,23 @@ def main() -> None:
     log_summary(report)
 
 
-def evaluate(model: str, num_devices: int) -> dict[str, dict[str, float]]:
-    """Score one checkpoint over the evaluation slice.
+def evaluate(
+    model: str,
+    processor: WhisperProcessor,
+    datamodule: SpeechDataModule,
+    num_devices: int,
+) -> dict[str, dict[str, float]]:
+    """Score one checkpoint over the shared evaluation slice.
+
+    The processor comes from the baseline rather than from ``model`` so that
+    every checkpoint is fed identical features and decoded with identical
+    tokens. Whisper finetunes keep their base feature extractor and tokenizer,
+    so this is the same processor the checkpoint was trained under.
 
     Args:
         model: Hub id or local path of a Whisper checkpoint.
+        processor: Baseline processor, shared across all models.
+        datamodule: Datamodule holding the already-materialized slice.
         num_devices: Devices to run validation across.
 
     Returns:
@@ -71,11 +133,13 @@ def evaluate(model: str, num_devices: int) -> dict[str, dict[str, float]]:
         ``{"wer": {lang: rate, ..., "overall": rate}, "cer": {...}}``.
     """
     logging.info("Evaluating %s", model)
-    config = Config(base_model=model, max_eval_samples=EVAL_SAMPLES)
-    seed_everything(config.seed, workers=True)
-    processor = build_processor(config)
+    config = Config(
+        base_model=model,
+        max_eval_samples=EVAL_SAMPLES,
+        eval_split=EVAL_SPLIT,
+        languages=EVAL_LANGUAGES,
+    )
     module = WhisperGRPOModule(config, processor)
-    datamodule = SpeechDataModule(config, processor)
     trainer = Trainer(devices=num_devices, logger=False, enable_checkpointing=False)
     trainer.validate(module, datamodule=datamodule)
     return module.val_metric.compute()
