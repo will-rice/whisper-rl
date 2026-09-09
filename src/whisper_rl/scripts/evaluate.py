@@ -30,35 +30,19 @@ from whisper_rl.datasets import SpeechDataModule
 from whisper_rl.lightning_module import WhisperGRPOModule
 from whisper_rl.modeling import build_processor
 
-# Clips pulled from the split. The slice spans every locale in the dataset, so
-# this divides across all of them -- too small a number leaves single-digit
-# clips per language and per-language rates stop meaning anything.
-EVAL_SAMPLES = 2048
+# Local CV26 parquet index. The Hub's common_voice_17_0 is the wrong corpus for
+# checkpoints trained on CV22, and Common Voice keeps speaker assignments stable
+# across releases (measured: 1 shared speaker in 4,900 across six locales), so
+# CV26 test is disjoint from CV22 train and validation alike.
+EVAL_DATASET = "/data/common_voice_26/index"
 
 # Held out from both training and checkpoint selection, unlike ``validation``.
 EVAL_SPLIT = "test"
 
-# Fixed before any result was seen, so the table cannot be a post-hoc pick of
-# the locales that happened to improve. Four high-resource, three mid, one
-# without word boundaries (ja, where CER rather than WER is the meaningful
-# figure), and four low-resource -- the tier GRPO on error rate should help
-# most, and where Whisper is weakest. Scoring all 50 locales instead would
-# cost 50 sequential stream setups and leave too few clips per language for
-# any single rate to mean anything.
-EVAL_LANGUAGES = [
-    "en",
-    "de",
-    "fr",
-    "es",
-    "pt",
-    "ru",
-    "tr",
-    "ja",
-    "ta",
-    "sw",
-    "cy",
-    "ka",
-]
+# Clips pulled from the split, round-robin across every locale in the index.
+# ``SpeechDataset`` materializes log-mel features in memory at ~1 MB per clip,
+# so this is bounded by RAM rather than by GPU time.
+EVAL_SAMPLES = 4800
 
 
 def main() -> None:
@@ -77,10 +61,10 @@ def main() -> None:
 
     baseline = args.models[0]
     config = Config(
+        dataset_name=EVAL_DATASET,
         base_model=baseline,
         max_eval_samples=EVAL_SAMPLES,
         eval_split=EVAL_SPLIT,
-        languages=EVAL_LANGUAGES,
     )
     seed_everything(config.seed, workers=True)
     processor = build_processor(config)
@@ -97,7 +81,7 @@ def main() -> None:
         "baseline": baseline,
         "eval_split": EVAL_SPLIT,
         "eval_samples": EVAL_SAMPLES,
-        "eval_languages": EVAL_LANGUAGES,
+        "eval_dataset": EVAL_DATASET,
         "results": results,
         "deltas": {
             model: deltas(results[baseline], results[model])
@@ -134,10 +118,10 @@ def evaluate(
     """
     logging.info("Evaluating %s", model)
     config = Config(
+        dataset_name=EVAL_DATASET,
         base_model=model,
         max_eval_samples=EVAL_SAMPLES,
         eval_split=EVAL_SPLIT,
-        languages=EVAL_LANGUAGES,
     )
     module = WhisperGRPOModule(config, processor)
     trainer = Trainer(devices=num_devices, logger=False, enable_checkpointing=False)

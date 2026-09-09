@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 csv.field_size_limit(sys.maxsize)
 
 # Common Voice split file -> the split name we expose (dev is our validation).
-SPLITS = {"train": "train.tsv", "validation": "dev.tsv"}
+SPLITS = {"train": "train.tsv", "validation": "dev.tsv", "test": "test.tsv"}
 
 
 def main() -> None:
@@ -46,6 +46,14 @@ def main() -> None:
         type=Path,
         help="Where to write the <split>/<locale>.parquet index.",
     )
+    parser.add_argument(
+        "--splits",
+        nargs="+",
+        choices=sorted(SPLITS),
+        default=sorted(SPLITS),
+        help="Splits to ingest. Each row is checked against the clip on disk, so "
+        "re-ingesting train to add a split costs millions of stat calls.",
+    )
     args = parser.parse_args()
 
     supported = whisper_supported()
@@ -55,7 +63,8 @@ def main() -> None:
         if locale.split("-")[0] not in supported:
             logger.info("Skipping non-Whisper locale %s", locale)
             continue
-        for split, tsv_name in SPLITS.items():
+        for split in args.splits:
+            tsv_name = SPLITS[split]
             records = build_records(locale_dir, tsv_name, locale)
             if not records:
                 continue
